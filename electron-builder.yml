@@ -1,0 +1,16 @@
+appId: com.deepseek.harness.desktop
+productName: DeepSeek Harness
+directories:
+  output: release
+# 使用本地 node_modules/electron 二进制，避免打包时联网下载
+electronDist: node_modules/electron/dist
+files:
+  - main.js
+  - preload.js
+  - loading.html
+  - package.json
+  - assets/icon.png
+win:
+  icon: assets/icon.ico
+  target:
+    - dir
