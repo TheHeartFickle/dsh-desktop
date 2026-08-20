@@ -3,13 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "description": "DeepSeek Harness Web GUI desktop shell",
-  "main": "main.js",
+  "type": "module",
+  "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64"
+    "dist": "electron-builder --win --x64",
+    "test": "node test/version.test.js && node test/net-utils.test.js"
   },
   "devDependencies": {
     "electron": "43.4.0",
     "electron-builder": "26.15.3"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.4"
   }
 }

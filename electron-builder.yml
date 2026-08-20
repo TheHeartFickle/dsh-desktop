@@ -5,9 +5,9 @@ directories:
 # 使用本地 node_modules/electron 二进制，避免打包时联网下载
 electronDist: node_modules/electron/dist
 files:
-  - main.js
-  - preload.js
-  - loading.html
+  - src/main/**/*
+  - src/preload/index.cjs
+  - src/renderer/loading.html
   - package.json
   - assets/icon.png
 win:
