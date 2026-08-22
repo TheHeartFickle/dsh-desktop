@@ -101,14 +101,46 @@ async function main() {
 // Cover the dsh page with the whale-girl loading page until its boot screen
 // has been replaced by the real UI, then drop the overlay.
 async function showLoadingOverlayAndLoad(url) {
-  loadingView = await windowManager.showLoadingOverlay(mainWindow)
-  // The overlay needs one compositor beat after addChildView before its first
-  // frame is on screen; navigating the main window right away would let the
-  // navigation flash (old page torn down, new page still blank) show through
-  // the not-yet-composited view.
-  await new Promise((r) => setTimeout(r, 120))
-  await mainWindow.loadURL(url)
-  await windowManager.waitForDshUi(mainWindow, UI_READY_TIMEOUT_MS)
-  await windowManager.hideLoadingOverlay(mainWindow, loadingView)
-  loadingView = null
+  try {
+    loadingView = await windowManager.showLoadingOverlay(mainWindow)
+    // The overlay needs one compositor beat after addChildView before its first
+    // frame is on screen; navigating the main window right away would let the
+    // navigation flash (old page torn down, new page still blank) show through
+    // the not-yet-composited view.
+    await new Promise((r) => setTimeout(r, 120))
+
+    // 后端刚就绪时仍有竞态：loadURL 可能遇到 ERR_FAILED。这里重试一次，避免
+    // 未捕获的 rejection 把窗口留在空白状态。
+    let lastError
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await mainWindow.loadURL(url)
+        lastError = null
+        break
+      } catch (err) {
+        lastError = err
+        logWarn(`加载后端页面失败（第 ${attempt} 次）: ${err.message}`)
+        if (attempt === 1) await new Promise((r) => setTimeout(r, 1000))
+      }
+    }
+    if (lastError) throw lastError
+
+    let ready = await windowManager.waitForDshUi(mainWindow, UI_READY_TIMEOUT_MS)
+    if (!ready) {
+      // 页面已加载但真实 UI 没挂载也可能是瞬时问题；自动刷新一次再等。
+      logWarn('DSH 页面未在预期时间内挂载，自动刷新重试...')
+      await mainWindow.loadURL(url)
+      ready = await windowManager.waitForDshUi(mainWindow, UI_READY_TIMEOUT_MS)
+      if (!ready) throw new Error('DSH 页面在自动刷新后仍未挂载')
+    }
+
+    await windowManager.hideLoadingOverlay(mainWindow, loadingView)
+    mainWindow.webContents.focus()
+    loadingView = null
+  } catch (err) {
+    logError(`加载后端页面失败: ${err.message}`)
+    await windowManager.hideLoadingOverlay(mainWindow, loadingView).catch(() => {})
+    loadingView = null
+    fail(`加载后端页面失败:\n${err.message}`)
+  }
 }

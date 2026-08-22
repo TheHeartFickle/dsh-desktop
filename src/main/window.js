@@ -35,9 +35,18 @@ export function createWindowManager({ config, logger }) {
       if (/^https?:\/\//.test(url)) shell.openExternal(url)
       return { action: 'deny' }
     })
-    // Tab 默认拦截，避免 Chromium 切换控件焦点；只有命令菜单（斜杠命令框）打开时，
-    // 才把 Tab 当作回车发送给页面用于选中高亮项，否则吞掉这次 Tab。
+    // 菜单栏已被移除，默认的 Ctrl+R 加速键也会随之失效；这里手动恢复刷新。
     win.webContents.on('before-input-event', (event, input) => {
+      const isCtrlOrMeta = input.control || input.meta
+      if (input.type === 'keyDown' && !input.alt && isCtrlOrMeta && input.key.toLowerCase() === 'r') {
+        event.preventDefault()
+        if (input.shift) win.webContents.reloadIgnoringCache()
+        else win.webContents.reload()
+        return
+      }
+
+      // Tab 默认拦截，避免 Chromium 切换控件焦点；只有命令菜单（斜杠命令框）打开时，
+      // 才把 Tab 当作回车发送给页面用于选中高亮项，否则吞掉这次 Tab。
       if (input.type === 'keyDown' && input.key.toLowerCase() === 'tab' && !input.control && !input.meta && !input.alt) {
         event.preventDefault()
         win.webContents.executeJavaScript(
@@ -48,6 +57,18 @@ export function createWindowManager({ config, logger }) {
           win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
         }).catch(() => {})
       }
+    })
+
+    // 渲染进程崩溃会直接表现为白屏；这里自动刷新一次，尽量让用户无需重启。
+    // clean-exit 是正常关闭进程，不需要刷新。
+    win.webContents.on('render-process-gone', (_event, details) => {
+      if (details.reason === 'clean-exit') return
+      logger.logWarn(`渲染进程异常退出（${details.reason}），尝试自动刷新恢复...`)
+      setTimeout(() => {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+          win.webContents.reload()
+        }
+      }, 300)
     })
 
     // Flush any lines logged before the loading page finished loading.
