@@ -94,7 +94,7 @@ export function createWindowManager({ config, logger }) {
   }
 
   function fitLoadingOverlay(mainWindow, loadingView) {
-    if (!loadingView || loadingView.webContents.isDestroyed()) return
+    if (!loadingView || !loadingView.webContents || loadingView.webContents.isDestroyed()) return
     const b = mainWindow.getContentBounds()
     loadingView.setBounds({ x: 0, y: 0, width: b.width, height: b.height })
   }
