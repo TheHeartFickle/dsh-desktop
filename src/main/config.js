@@ -1,11 +1,12 @@
 import { nativeTheme } from 'electron'
 
-export const DEFAULT_URL = 'http://127.0.0.1:3080'
 export const BACKEND_TIMEOUT_MS = 60_000
 export const UI_READY_TIMEOUT_MS = 30_000
 export const POLL_INTERVAL_MS = 400
 
-export const targetUrl = () => process.env.DSH_WEB_URL || DEFAULT_URL
+// 3080 空闲则优先使用固定端口，被占用时回退 `--port 0` 由系统挑空闲端口。
+// 桌面端始终拉起自己的后端并从 stdout 获取临时 token；DSH_WEB_CMD 覆盖时由
+// 自定义命令自行决定端口。
 export const backendCommand = () => process.env.DSH_WEB_CMD || 'dsh web --no-open'
 
 // 与 loading.html 的背景色一致（跟随系统主题）。窗口/覆盖层在内容合成前的

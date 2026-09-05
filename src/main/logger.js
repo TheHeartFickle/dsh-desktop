@@ -92,7 +92,7 @@ export function createLogger() {
       logBuffer.splice(0, logBuffer.length - LOG_BUFFER_LIMIT)
     }
     for (const wc of logTargets()) {
-      if (wc && !wc.isDestroyed() && !wc.isLoading()) wc.send('desktop:log', text)
+      if (wc && !wc.isDestroyed()) wc.send('desktop:log', text)
     }
   }
 

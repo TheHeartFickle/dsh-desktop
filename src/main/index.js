@@ -1,6 +1,5 @@
 import { app, dialog } from 'electron'
 import {
-  targetUrl,
   backendCommand,
   LOADING_BG,
   BACKEND_TIMEOUT_MS,
@@ -17,12 +16,14 @@ import { createWindowManager, LOADING_PATH } from './window.js'
 // Desktop shell for the DeepSeek Harness Web GUI.
 //
 // The Web GUI is not a standalone static site: it is served by `dsh web`,
-// which injects window.__DSH_BOOT__ and serves client plugin bundles. This
+// which injects window.__DSH_BOOT__, requires the random per-run ?token= that
+// it prints on its own stdout, and serves client plugin bundles. This
 // shell does NOT bundle the backend — it loads a loading screen, makes sure a
 // usable Node.js runtime and the `dsh` package exist on the user's system
 // (installing either one when missing or too old, downloading through the
-// system proxy when one is available), starts `dsh web` on demand, then loads
-// the real page once the backend answers with a real boot manifest.
+// system proxy when one is available), starts `dsh web` on demand, parses the
+// token URL from its stdout, then loads that URL once the backend answers
+// with a real boot manifest.
 
 const logger = createLogger()
 const { log, logWarn, logError } = logger
@@ -73,15 +74,6 @@ async function main() {
   log('DeepSeek Harness 桌面端启动中…')
   const logPath = logger.currentLogPath()
   if (logPath) log(`日志文件: ${logPath}`)
-  const url = targetUrl()
-
-  // Reuse an already-running backend (e.g. started by hand) — never spawn a
-  // second one onto the same port, and never touch the environment for it.
-  if (await backend.probeOnce(url)) {
-    log(`检测到已在运行的后端，直接连接: ${url}`)
-    await showLoadingOverlayAndLoad(url)
-    return
-  }
 
   const nodeDet = await node.ensureNode()
   if (!nodeDet.ok) return fail(nodeDet.reason)
@@ -89,12 +81,16 @@ async function main() {
   const dshDet = await dsh.ensureDsh(nodeDet)
   if (!dshDet.ok) return fail(dshDet.reason)
 
-  log(`启动后端: ${backendCommand()}`)
-  backendChild = backend.startBackend(dshDet, nodeDet, () => { backendChild = null })
-  const ready = await backend.waitForBackend(url, BACKEND_TIMEOUT_MS)
-  if (!ready) {
-    return fail(`后端未在 ${BACKEND_TIMEOUT_MS / 1000}s 内就绪，详见上方日志。`)
+  // token 只会打印在后端自己的 stdout 上，外部已运行的后端拿不到 token；
+  // 因此总是拉起自己的后端：3080 空闲优先固定端口，被占用则用 --port 0
+  // 随机端口，从其输出解析出带 token 的地址再连接。
+  const started = await backend.startBackend(dshDet, nodeDet, () => { backendChild = null })
+  backendChild = started.child
+  const url = await backend.waitForBackend(started.urlReady, BACKEND_TIMEOUT_MS)
+  if (!url) {
+    return fail(`后端未能就绪（已退出或 ${BACKEND_TIMEOUT_MS / 1000}s 超时），详见上方日志。`)
   }
+  log(`后端就绪: ${url}`)
   await showLoadingOverlayAndLoad(url)
 }
 

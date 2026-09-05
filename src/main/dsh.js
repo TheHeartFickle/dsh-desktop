@@ -9,8 +9,18 @@ export function createDsh({ log, logWarn, node, net }) {
     if (!npmCli) return { ok: false, reason: '未找到 npm，无法定位或安装 dsh' }
     const root = node.globalNpmRoot(nodeExe, npmCli)
     if (!root) return { ok: false, reason: '无法确定全局 npm 目录' }
-    const dshBin = path.join(root, '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-    if (fs.existsSync(dshBin)) return { ok: true, dshBin }
+    const dshRoot = path.join(root, '@deepseek-ai', 'dsh')
+    const dshBin = path.join(dshRoot, 'lib', 'bin.js')
+    if (fs.existsSync(dshBin)) {
+      let version
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(dshRoot, 'package.json'), 'utf8'))
+        version = pkg.version
+      } catch {
+        // 读不到版本不阻断启动，仅影响版本日志
+      }
+      return { ok: true, dshBin, version }
+    }
     return { ok: false }
   }
 
@@ -20,7 +30,7 @@ export function createDsh({ log, logWarn, node, net }) {
     }
     const det = detectDsh(node.nodeExe, node.npmCli)
     if (det.ok) {
-      log('dsh 可用')
+      log(det.version ? `dsh 可用: v${det.version}` : 'dsh 可用')
       return det
     }
     log('未检测到 dsh，开始引导安装 @deepseek-ai/dsh...')
