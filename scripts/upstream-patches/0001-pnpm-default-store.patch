@@ -1,0 +1,41 @@
+diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
+index d3f9dae8a3..3ad6f45746 100644
+--- a/apps/desktop/scripts/prepare-dsh.ts
++++ b/apps/desktop/scripts/prepare-dsh.ts
+@@ -31,7 +31,6 @@ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const BUILD_PATHS = resolveDesktopTargetBuildPaths()
+ const DSH_OUTPUT_ROOT = BUILD_PATHS.dsh
+ const BUILD_ROOT = mkdtempSync(join(tmpdir(), 'dsh-desktop-runtime-'))
+-const STORE_ROOT = join(BUILD_ROOT, 'store')
+ const RUNTIME_ROOT = BUILD_PATHS.runtime
+ const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
+ const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
+@@ -71,7 +70,6 @@ function runPnpm(args: readonly string[]): Promise<void> {
+     const child = spawn(NODE, [
+       PNPM,
+       '--config.registry=https://registry.npmjs.org/',
+-      `--config.store-dir=${STORE_ROOT}`,
+       '--config.enable-global-virtual-store=false',
+       `--config.userconfig=${userConfig}`,
+       command,
+@@ -83,12 +81,9 @@ function runPnpm(args: readonly string[]): Promise<void> {
+           name !== 'NODE_OPTIONS' && name !== 'NODE_PATH' && !/^DSH_DESKTOP_/u.test(name) && !/^(?:npm|pnpm|corepack)_/iu.test(name)
+         ))),
+         NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/',
+-        NPM_CONFIG_STORE_DIR: STORE_ROOT,
+         NPM_CONFIG_USERCONFIG: userConfig,
+         PATH: `${dirname(NODE)}${delimiter}${process.env.PATH ?? ''}`,
+-        XDG_CACHE_HOME: join(PNPM_BUILD_STATE, 'cache'),
+         XDG_CONFIG_HOME: config,
+-        XDG_STATE_HOME: join(PNPM_BUILD_STATE, 'state'),
+       },
+       stdio: 'inherit',
+     })
+@@ -103,7 +98,6 @@ function runPnpm(args: readonly string[]): Promise<void> {
+ async function main(): Promise<void> {
+   rmSync(DSH_OUTPUT_ROOT, { recursive: true, force: true })
+   rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
+-  mkdirSync(STORE_ROOT, { recursive: true })
+   try {
+     const release = desktopRelease()
+     copyFileSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGE_SET_FILE), join(BUILD_ROOT, DESKTOP_PACKAGE_SET_FILE))

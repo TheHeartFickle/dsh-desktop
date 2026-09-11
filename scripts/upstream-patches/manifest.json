@@ -1,0 +1,48 @@
+{
+  "name": "0.1.5-rc.2",
+  "baseCommit": "c291e7961a515f6d7af9304e7fd1d257929aef26",
+  "baseVersion": "0.1.5-rc.2",
+  "note": "补丁针对 baseCommit 生成。应用前把上游工作区 checkout 到该提交（apply-local.mjs 会自动完成）。跟进官方更新时，更新 baseCommit 并重跑应用流程，失败点只需在 patch 层适配。每个补丁的 assert 声明应用后必须存在（require）/ 必须消失（forbid）的片段：插入类失配由 git apply 报错，删除类可能干净应用却失效，只能靠 assert 兜住。",
+  "injectionDir": "apps/desktop/.local-desktop",
+  "patches": [
+    {
+      "file": "0001-pnpm-default-store.patch",
+      "kind": "remove-override",
+      "targets": [
+        "apps/desktop/scripts/prepare-dsh.ts"
+      ],
+      "purpose": "删掉上游对 pnpm store 与 metadata 缓存位置的覆盖，让 pnpm 使用它自己的默认（即全局 store-dir 配置）。全局 store 位置变化时构建自动跟随，无需预热、无硬编码路径",
+      "layer": "patch",
+      "planned": "不需要适配层：补丁不含任何具体路径，官方更新时只需确认删除点仍存在",
+      "assert": {
+        "file": "apps/desktop/scripts/prepare-dsh.ts",
+        "forbid": [
+          "const STORE_ROOT =",
+          "--config.store-dir=",
+          "NPM_CONFIG_STORE_DIR",
+          "XDG_CACHE_HOME",
+          "XDG_STATE_HOME"
+        ]
+      }
+    },
+    {
+      "file": "0002-skip-removed-fs-ext-smoke.patch",
+      "kind": "modify",
+      "targets": [
+        "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs"
+      ],
+      "purpose": "fs-ext 已被 @deepseek-ai/node-addon-system 取代；smoke 检查容忍其缺失，否则 Windows 打包必然失败",
+      "layer": "adapter+patch",
+      "planned": "检查项容忍策略下沉到 .local-desktop/upstream/smoke.mjs，补丁改为只插入对其的调用",
+      "assert": {
+        "file": "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs",
+        "require": [
+          "fs-ext absent (superseded by node-addon-system)"
+        ],
+        "forbid": [
+          "\n  const fsExt = requireRuntime('fs-ext')\n"
+        ]
+      }
+    }
+  ]
+}

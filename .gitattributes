@@ -1,0 +1,9 @@
+# 补丁必须保持 LF：CRLF 会让 git apply 的上下文行失配
+*.patch -text
+
+# tsx shim 是 sh / pwsh 脚本：CRLF 会污染 shebang 与解释器参数
+scripts/upstream-patches/tsx-backup/tsx -text
+scripts/upstream-patches/tsx-backup/tsx.ps1 -text
+
+# 本文件自身
+.gitattributes -text
