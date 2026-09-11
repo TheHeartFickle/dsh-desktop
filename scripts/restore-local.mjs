@@ -5,15 +5,16 @@
  * 流程：
  *   1. 读取 .state.json（apply 时写入）
  *   2. git checkout -- . 丢弃补丁对官方文件的改动
- *   3. checkout 回原始 ref
- *   4. 删除注入目录
- *   5. 校验工作区干净
+ *   3. 删除补丁新增的未跟踪文件（git checkout 清不掉它们）
+ *   4. checkout 回原始 ref
+ *   5. 删除注入目录、移除 .git/info/exclude 条目、移除构建目录重定向
+ *   6. 校验工作区干净
  *
  * 用法：
  *   node scripts/restore-local.mjs [--upstream <路径>]
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,6 +22,8 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..')
 const PATCH_DIR = join(HERE, 'upstream-patches')
 const STATE_FILE = join(PATCH_DIR, '.state.json')
+/** 与 apply-local.mjs 中同名常量保持一致 */
+const INJECTION_EXCLUDE_MARKER = '# dsh-desktop-local-injection（apply-local.mjs 管理，勿手工编辑）'
 
 function fail(message) {
   console.error(`restore-local: ${message}`)
@@ -51,7 +54,16 @@ if (!existsSync(join(upstream, '.git'))) fail(`上游不是 git 仓库: ${upstre
 git(upstream, ['checkout', '--', '.'])
 console.log('restore-local: 已丢弃补丁改动')
 
-// 2. 回到原始 ref
+// 2. 补丁新增的文件不在 index 里，git checkout 清不掉，按 state.targets 显式删除
+for (const target of state.targets ?? []) {
+  if (isTracked(upstream, target)) continue
+  const injected = join(upstream, target)
+  if (!existsSync(injected)) continue
+  rmSync(injected, { force: true })
+  console.log(`restore-local: 已删除补丁新增的文件 ${target}`)
+}
+
+// 3. 回到原始 ref
 const head = git(upstream, ['rev-parse', 'HEAD'])
 const originalCommit = git(upstream, ['rev-parse', state.originalRef])
 if (head !== originalCommit) {
@@ -59,23 +71,50 @@ if (head !== originalCommit) {
   console.log(`restore-local: 已切回 ${state.originalRef}`)
 }
 
-// 3. 删除注入目录
+// 4. 删除注入目录
 const injectionDir = join(upstream, state.injectionDir)
 if (existsSync(injectionDir)) {
   rmSync(injectionDir, { recursive: true, force: true })
   console.log(`restore-local: 已删除 ${state.injectionDir}`)
 }
+removeInjectionExclude(state.injectionDir)
 
-// 4. 移除构建目录重定向（只删 junction 本身，缓存内容保留在 <repo>/.cache/）
+// 5. 移除构建目录重定向（只删 junction 本身，缓存内容保留在 <repo>/.cache/）
 const buildRoot = join(upstream, 'apps', 'desktop', '.desktop-build')
 if (lstatSync(buildRoot, { throwIfNoEntry: false })?.isSymbolicLink()) {
   unlinkSync(buildRoot)
   console.log('restore-local: 已移除构建目录重定向（缓存保留在 .cache/desktop-build）')
 }
 
-// 4. 校验干净
+// 6. 校验干净
 const dirty = git(upstream, ['status', '--porcelain'])
 if (dirty !== '') fail(`上游仍有残留改动:\n${dirty}`)
 
 unlinkSync(STATE_FILE)
 console.log('restore-local: 上游工作区已还原干净')
+
+/** 该路径是否已被上游跟踪（tracked 文件交给 git checkout 还原，未跟踪的才需要删除）。 */
+function isTracked(upstream, target) {
+  try {
+    // 未跟踪时 git 会报 pathspec 错误，这里抑制输出，只用退出码判断
+    execFileSync('git', ['-C', upstream, 'ls-files', '--error-unmatch', '--', target], { stdio: ['ignore', 'pipe', 'ignore'] })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 移除 apply-local.mjs 写进上游 .git/info/exclude 的注入目录条目。 */
+function removeInjectionExclude(injectionRelative) {
+  const excludePath = join(upstream, '.git', 'info', 'exclude')
+  if (!existsSync(excludePath)) return
+  const lines = readFileSync(excludePath, 'utf8').split('\n')
+  const entry = `${injectionRelative}/`
+  const filtered = lines.filter(line => {
+    const value = line.trim()
+    return value !== INJECTION_EXCLUDE_MARKER && value !== entry
+  })
+  if (filtered.length === lines.length) return
+  writeFileSync(excludePath, filtered.join('\n'))
+  console.log('restore-local: 已移除上游 .git/info/exclude 中的注入目录条目')
+}

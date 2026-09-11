@@ -56,20 +56,26 @@ desktop/                          ← 本仓库（GitHub 同步）
 
 ```bash
 cd D:/Project/DeepSeek-Harness/desktop
-node scripts/apply-local.mjs --check   # 只校验：上游干净 + 补丁能干净应用
+node scripts/apply-local.mjs --check   # 只校验：上游干净 + 补丁能否干净应用到基线（不改动上游）
 node scripts/apply-local.mjs           # 应用
 # ...构建 / 打包...
 node scripts/restore-local.mjs         # 还原
 ```
 
+`--check` 不改动上游：它把补丁涉及的文件从 `baseCommit` 导出到临时目录再校验。因此即使上游 HEAD
+已经漂移（例如已跟进到新版本），结论仍然是「补丁能否干净应用到基线」——与真实应用一致。
+
 `apply-local.mjs` 依次完成：
 
 1. 校验上游工作区干净（有未提交改动则拒绝）
 2. 记录当前 ref，`checkout` 到 `manifest.json` 的 `baseCommit`
-3. 把上游 `apps/desktop/.desktop-build` 重定向为 **junction** → `<repo>/.cache/desktop-build`
+3. 把上游 `apps/desktop/.desktop-build` 重定向为 **junction** → `<repo>/.cache/desktop-build`，并把注入目录写进上游 `.git/info/exclude`
 4. 按层复制：`src/upstream` → `.local-desktop/upstream/`，`src/features` → `.local-desktop/features/`
 5. 先对全部补丁 `git apply --check`，通过后再逐个应用
-6. 写入 `.state.json` 后执行各补丁的 `assert` 生效断言
+6. 写入 `.state.json` → 执行各补丁的 `assert` 生效断言 → 检查 pnpm store 前提（只警告，不阻塞）
+
+关于第 3 步的 `exclude`：注入目录不是上游的文件，写进 `.git/info/exclude` 后，apply 期间上游
+`git status` 保持干净（只显示补丁改动的两个文件），避免人工 `git clean` / `checkout` 误伤注入物。
 
 关于第 4 步：**两层必须各占一个子目录**。它们若摊平进同一个目录，两层的同名文件
 （例如各自的 `README.md`）会静默互相覆盖，`upstream` 层的契约文件可能直接丢失。
@@ -77,13 +83,14 @@ node scripts/restore-local.mjs         # 还原
 
 第 6 步先落状态再断言：断言失败时补丁已经写进上游，必须保证 `restore-local.mjs` 能还原。
 
-`restore-local.mjs` 做逆操作：丢弃改动 → 切回原 ref → 删注入 → 移除 junction → 校验干净。
+`restore-local.mjs` 做逆操作：丢弃补丁改动 → 删除补丁新增的未跟踪文件 → 切回原 ref →
+删除注入目录 → 移除 `.git/info/exclude` 条目与 junction → 校验干净。
 
 ## 5. 缓存策略
 
 | 缓存 | 位置 | 机制 |
 |---|---|---|
-| pnpm 包 | **全局 store**（`pnpm store path`） | 补丁删掉了上游对 store 位置的覆盖，pnpm 用它自己的默认 → 全局位置一变，构建自动跟随，**无需预热、无硬编码** |
+| pnpm 包 | **pnpm 全局 store**（`pnpm store path`） | 补丁删掉了上游对 store 位置的覆盖，pnpm 用它自己的默认 → 全局位置一变，构建自动跟随，**无需预热、无硬编码**。前提：`store-dir` 必须配在 pnpm 全局配置（`--location=global`）——上游的 `--config.userconfig=<空文件>` 会屏蔽 `~/.npmrc`；`apply` 时会检查并警告 |
 | 内置 Node 归档 | `.cache/desktop-build/downloads/` | 上游 `prepare-runtime.ts` 自带 `if (!existsSync(archive))` 判断 |
 | 构建产物 | `.cache/desktop-build/targets/` | 经 junction 落在仓库内，不随源码移动丢失 |
 

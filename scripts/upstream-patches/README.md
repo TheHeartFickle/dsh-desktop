@@ -11,23 +11,29 @@
 ```bash
 cd D:/Project/DeepSeek-Harness/desktop
 
-node scripts/apply-local.mjs --check   # 只校验：上游是否干净、补丁能否干净应用
+node scripts/apply-local.mjs --check   # 只校验：上游是否干净、补丁能否干净应用到基线（不改动上游）
 node scripts/apply-local.mjs           # 应用（见下方六步）
 # ...构建 / 打包...
-node scripts/restore-local.mjs         # 还原：丢弃改动 → 切回原 ref → 删注入 → 移除缓存重定向
+node scripts/restore-local.mjs         # 还原：丢弃改动 → 删补丁新增文件 → 切回原 ref → 删注入 → 移除 exclude 条目与缓存重定向
 ```
 
 `apply-local.mjs` 依次完成：
 
 1. 校验上游工作区干净（有未提交改动则拒绝）
 2. 记录当前 ref，并 `checkout` 到 `manifest.json` 声明的 `baseCommit`
-3. 把上游 `apps/desktop/.desktop-build` 重定向为 **junction** → `<repo>/.cache/desktop-build`
+3. 把上游 `apps/desktop/.desktop-build` 重定向为 **junction** → `<repo>/.cache/desktop-build`，并把注入目录写进上游 `.git/info/exclude`
 4. 按层复制：`src/upstream` → `.local-desktop/upstream/`，`src/features` → `.local-desktop/features/`
 5. 先对全部补丁执行 `git apply --check`，通过后再逐个应用
-6. 写入 `.state.json` 后执行每个补丁的 `assert` 生效断言
+6. 写入 `.state.json` → 执行每个补丁的 `assert` 生效断言 → 检查 pnpm store 前提（只警告）
+
+第 3 步的 `exclude`：注入目录不是上游文件，加入后 apply 期间上游 `git status` 保持干净，
+不会被人手的 `git clean` / `git checkout` 误伤。
 
 第 4 步按层各占一个子目录是刻意的：摊平进同一目录时，两层同名文件（例如各自的 `README.md`）
 会静默互相覆盖，适配层的契约文件可能凭空消失。
+
+`--check` 把补丁涉及的文件从 `baseCommit` 导出到临时目录再校验，所以上游 HEAD 漂移时
+（例如已跟进到新版本）结论依然与真实应用一致。
 
 ## 补丁清单
 
@@ -63,8 +69,18 @@ node scripts/restore-local.mjs         # 还原：丢弃改动 → 切回原 ref
 pnpm store path     # 查看当前生效的 store，例如 D:\Users\Nuper\.pnpm-store\v11
 ```
 
-**因此全局 store 位置变化时，构建自动跟随——无需预热、无需修改任何命令**（实测：
-即使上游传 `--config.userconfig=<空文件>` 做隔离，pnpm 仍能读到用户级 `~/.npmrc` 的 `store-dir`）。
+**因此全局 store 位置变化时，构建自动跟随——无需预热、无需修改任何命令**。
+
+前提要写清：上游会用 `--config.userconfig=<空文件>` 做隔离，**这会屏蔽 `~/.npmrc`**，所以 `store-dir`
+必须配在 pnpm 自己的全局配置里：
+
+```bash
+pnpm config set store-dir <路径> --location=global
+pnpm config get store-dir --location=global   # 核对；Windows 落在 %LOCALAPPDATA%\pnpm\config\config.yaml
+```
+
+只写在 `~/.npmrc` 里的配置**不会生效**，构建会静默回落到默认 store 位置（Windows 上通常落到 C 盘，
+跨盘会失去硬链接）。`apply-local.mjs` 应用后会检查这一前提，缺失时给出警告。
 
 ### 构建产物：仍在仓库内，且不被跟踪
 
