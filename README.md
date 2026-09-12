@@ -23,8 +23,8 @@ node scripts/build.mjs   # 读配置 → 校验提交 → 清理并 checkout →
 ```text
 deepseek-harness/           源仓库 clone（内含独立 .git，不跟踪）
 src/build.config.json       构建配置：checkout 提交、复制映射、patch 列表、构建指令
-src/adaptator/              适配层：把官方内部接口固定成稳定接口
-src/features/               功能层：功能实现（独立文件）
+src/adaptator/              适配层：把官方内部接口固定成稳定接口（renderer/ 为渲染进程部分）
+src/features/               功能层：功能实现（独立文件；renderer/ 为渲染进程部分）
 src/patch/                  patch 层：每个目标源文件一个 patch
 scripts/build.mjs           构建入口
 assets/                     静态资源

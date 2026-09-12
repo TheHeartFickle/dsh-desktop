@@ -33,7 +33,9 @@ desktop/                          ← 本仓库
   src/
     build.config.json            ← 构建配置：checkout 提交、复制映射、patch 列表、构建指令
     adaptator/                    ← 适配层（独立文件）
+      renderer/                   ←   渲染进程部分：经典脚本（第 5.2 节）
     features/                     ← 功能层（独立文件）
+      renderer/                   ←   渲染进程部分：经典脚本 + 同源 CSS
     patch/                        ← patch 层：每个目标源文件一个 patch
       build.ts.patch
       pack.ts.patch
@@ -41,7 +43,6 @@ desktop/                          ← 本仓库
       prepare-dsh.ts.patch
       runtime-payload-smoke.mjs.patch
       startup.html.patch
-      startup.css.patch
       startup.js.patch
   scripts/
     build.mjs                     ← 构建入口：读配置 → 校验 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
@@ -94,8 +95,7 @@ desktop/                          ← 本仓库
 
 阶段 4/5 须走三层架构，**不可做成 dsh 插件**（原因见 [decisions.zh.md](decisions.zh.md) 第 6 条）。
 
-**与设计不符、需要重构的现状**：加载动画目前由 patch 直接修改 `renderer/startup.{html,css,js}` 实现，
-功能逻辑没有独立成功能层文件。按三层设计，它应当是「功能层封装 + patch 只插入调用」。
+加载动画已按三层落地（见第 5.2 节），阶段 4 只剩「复制 web 配置 / 配置快照回退 / 回退提示」三项。
 
 ## 5. 功能与实施状态
 
@@ -162,7 +162,7 @@ desktop/                          ← 本仓库
 
 | 能力 | 设计要点 |
 |---|---|
-| 加载动画 | 沿用自研壳的鲸鱼动画（`assets/`），等待后端时展示，进入真实 UI 前收场。**按三层实现**：功能层封装，patch 只插入调用（现状不符，见第 4 节）。受 CSP 约束：`startup.html` 声明 `script-src 'self'; style-src 'self'; img-src 'self' data:`，不能内联脚本/样式、不能取外部资源 |
+| 加载动画 | 沿用自研壳的鲸鱼动画（`assets/icon.png` → `renderer/loading-art.png`），等待后端时展示，官方 `render()` 判定失败时收起。**已按三层落地**：适配层 `adaptator/renderer/startup-page.js` 固定「插到官方页面哪个位置」，功能层 `features/renderer/loading-art.{js,css}` 负责画面与可见性，patch 只插 `<link>`、两个 `<script>` 和 `render()` 里一行 `dshLoadingArt.sync(failed)`。受 CSP 约束（`script-src 'self'; style-src 'self'; img-src 'self' data:`）：样式是同源 CSS 文件、图片是同源 PNG，无内联脚本/样式；渲染进程没有模块上下文（官方 `startup.js` 是经典脚本），所以两层以经典脚本 + 全局对象组装（决策 21） |
 | 复制 web 配置 | 触发条件：`profiles/desktop` 不存在且 `profiles/web` 含第三方插件。复制的是**配置语义而非目录**：`dependencies`、`dsh.profile.bundles` 里的第三方条目、`overrides`，以及 `pnpm-workspace.yaml` 的 `allowBuilds`（缺它，带 lifecycle script 的插件装不上）。web profile 里的 `.dsh-market`、`update.ps1` 之类本地产物不搬。**校验时机**：先复制 + 安装，再在 desktop runtime 的解析语境里校验，失败即回退 |
 | 配置快照/回退 | 备份 profile 里**用户可变**的文件：`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml`（可缺失）。**不备份** `desktop.cordis.yml`——它是 `desktop-host` 每次启动都重写的常量根配置；`node_modules` 由 lockfile 重建，同样不备份。时机：启动前快照 → 状态 `ready` 后提交为 last-good → 失败则回退并重试**一次** → 二次失败交官方恢复页（避免死循环）。回退必须是三步：还原文件 → 重建依赖 → **刷新宿主包链接**（第一方包是链进 profile 的，只还原文件不足以恢复可启动态） |
 | 回退提示 | 主进程在 `navigateMain(applicationUrl)` 成功后用 `executeJavaScript` 注入自绘 toast；不依赖 dsh 前端 DOM，也不改 `desktop-host` |

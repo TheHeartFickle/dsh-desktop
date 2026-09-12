@@ -2,8 +2,11 @@
   "upstream": "deepseek-harness",
   "checkout": "c291e7961a515f6d7af9304e7fd1d257929aef26",
   "copy": [
-    { "from": "adaptator", "to": "apps/desktop/local/adaptator" },
-    { "from": "features", "to": "apps/desktop/local/features", "exclude": ["*.test.mjs"] },
+    { "from": "adaptator", "to": "apps/desktop/local/adaptator", "exclude": ["renderer"] },
+    { "from": "features", "to": "apps/desktop/local/features", "exclude": ["*.test.mjs", "renderer"] },
+    { "from": "adaptator/renderer/startup-page.js", "to": "apps/desktop/renderer/startup-page.js" },
+    { "from": "features/renderer/loading-art.js", "to": "apps/desktop/renderer/loading-art.js" },
+    { "from": "features/renderer/loading-art.css", "to": "apps/desktop/renderer/loading-art.css" },
     { "from": "../assets/icon.png", "to": "apps/desktop/renderer/loading-art.png" }
   ],
   "patches": [
@@ -13,7 +16,6 @@
     { "file": "patch/pack.ts.patch", "target": "scripts/release/pack.ts" },
     { "file": "patch/runtime-payload-smoke.mjs.patch", "target": "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs" },
     { "file": "patch/startup.html.patch", "target": "apps/desktop/renderer/startup.html" },
-    { "file": "patch/startup.css.patch", "target": "apps/desktop/renderer/startup.css" },
     { "file": "patch/startup.js.patch", "target": "apps/desktop/renderer/startup.js" }
   ],
   "build": [
