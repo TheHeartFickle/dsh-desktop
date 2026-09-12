@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/renderer/startup.js b/apps/desktop/renderer/startup.js
+index 5146bf6f5e..a496b7d721 100644
+--- a/apps/desktop/renderer/startup.js
++++ b/apps/desktop/renderer/startup.js
+@@ -13,6 +13,7 @@ async function main() {
+     const failed = state.phase === 'error'
+     document.querySelector('main').setAttribute('aria-busy', String(!failed))
+     document.querySelector('#spinner').hidden = failed
++    document.querySelector('#loading-art').hidden = failed
+     document.querySelector('#title').textContent = failed ? messages.startupFailed : messages.startupLoading
+     document.querySelector('#description').textContent = failed ? messages.startupErrorDescription : messages.startupLoadingDescription
+     document.querySelector('#error').hidden = !failed

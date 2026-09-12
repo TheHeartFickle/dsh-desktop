@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/renderer/startup.html b/apps/desktop/renderer/startup.html
+index 098efb4f92..cbbf2649d5 100644
+--- a/apps/desktop/renderer/startup.html
++++ b/apps/desktop/renderer/startup.html
+@@ -9,6 +9,7 @@
+   </head>
+   <body>
+     <main aria-busy="true">
++      <img id="loading-art" src="loading-art.png" alt="" aria-hidden="true">
+       <div id="spinner" aria-hidden="true"></div>
+       <h1 id="title" role="status" aria-live="polite"></h1>
+       <p id="description"></p>

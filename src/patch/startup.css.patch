@@ -1,0 +1,14 @@
+diff --git a/apps/desktop/renderer/startup.css b/apps/desktop/renderer/startup.css
+index a15f246ee3..7248aa68d2 100644
+--- a/apps/desktop/renderer/startup.css
++++ b/apps/desktop/renderer/startup.css
+@@ -4,6 +4,9 @@ main { width: min(560px, calc(100vw - 64px)); padding: 40px 0; text-align: cente
+ h1 { margin: 24px 0 12px; font-size: 22px; font-weight: 600; }
+ p { color: #666; line-height: 1.6; }
+ #spinner { width: 32px; height: 32px; margin: auto; border: 3px solid #dedee3; border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.9s linear infinite; }
++#loading-art { display: block; width: 160px; height: 160px; margin: 0 auto 4px; animation: bob 2.4s ease-in-out infinite; }
++@keyframes bob { 50% { transform: translateY(-6px); } }
++@media (prefers-reduced-motion: reduce) { #loading-art { animation: none; } }
+ #error { padding: 16px; border: 1px solid #e0e0e5; border-radius: 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; font: 13px/1.6 ui-monospace, monospace; }
+ #actions { margin-top: 24px; }
+ button { margin: 4px; padding: 10px 18px; border: 1px solid transparent; border-radius: 8px; color: #fff; background: #4d6bfe; font: inherit; cursor: pointer; }

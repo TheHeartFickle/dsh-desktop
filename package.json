@@ -5,8 +5,7 @@
   "description": "在官方 dsh 桌面端之上叠加本地定制（分层源码 + 上游补丁）",
   "type": "module",
   "scripts": {
-    "check": "node scripts/apply-local.mjs --check",
-    "apply": "node scripts/apply-local.mjs",
-    "restore": "node scripts/restore-local.mjs"
+    "build": "node scripts/build.mjs",
+    "test": "node --test src/features"
   }
 }
