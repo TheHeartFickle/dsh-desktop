@@ -36,7 +36,7 @@ docs/                       设计与决策文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/design.zh.md](docs/design.zh.md) | 当前设计：三层职责、构建流程、当前状态、功能与实施状态 |
-| [docs/decisions.zh.md](docs/decisions.zh.md) | 重大决策与原因 |
-| [docs/reproduce.zh.md](docs/reproduce.zh.md) | 环境事实、关键踩坑、复刻命令 |
+| [docs/design.zh.md](docs/design.zh.md) | 当前设计（是什么、怎么做）：三层职责、构建流程、当前状态、功能设计 |
+| [docs/decisions.zh.md](docs/decisions.zh.md) | 重大决策与原因（为什么） |
+| [docs/reproduce.zh.md](docs/reproduce.zh.md) | 环境事实、踩坑与常用手段、构建缓存的实现与实测、复刻与验证命令 |
 | [docs/desktop-guide.zh.md](docs/desktop-guide.zh.md) | 官方桌面端探索记录（上游背景） |

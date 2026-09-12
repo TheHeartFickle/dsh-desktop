@@ -1,6 +1,7 @@
 # 当前设计
 
-> 本文是 `docs/` 三份设计文档之一：**当前设计** ｜ [重大决策与原因](decisions.zh.md) ｜ [探索内容与复刻命令](reproduce.zh.md)；
+> 本文是 `docs/` 三份设计文档之一：**当前设计**（是什么、怎么做） ｜ [重大决策与原因](decisions.zh.md)（为什么） ｜
+> [探索内容与复刻命令](reproduce.zh.md)（怎么跑、怎么验证、实测到什么）；
 > 上游背景见 [desktop-guide.zh.md](desktop-guide.zh.md)。
 
 在官方 `deepseek-harness` 桌面端之上叠加本地定制。定制 = **独立文件**（适配层 + 功能层）+ **git patch 行插入**（接线）；
@@ -90,14 +91,14 @@ desktop/                          ← 本仓库
 | 1 | 隔离环境下跑通开发态 | ✅ |
 | 2 | 打包 Windows 产物 | ✅ |
 | 3 | 自研壳归档 | ✅ |
-| 4 | 加载动画 / 复制 web 配置确认 / 配置快照回退 / 回退提示 | 进行中 |
+| 4 | 加载动画：三层实现 + dev 模式视觉验证 | ✅ |
+| 4 | 复制 web 配置确认 / 配置快照回退 / 回退提示 | 待实施 |
 | 5 | 诊断规则模块（按阶段分组、规则互不可见） | 待实施 |
 
-阶段 4/5 须走三层架构，**不可做成 dsh 插件**（原因见 [decisions.zh.md](decisions.zh.md) 第 6 条）。
+阶段 4/5 须走三层架构，**不可做成 dsh 插件**（原因见 [decisions.zh.md](decisions.zh.md) 第 6 条）；
+各项怎么验证见 [reproduce.zh.md](reproduce.zh.md) 第 6 节。
 
-加载动画已按三层落地（见第 5.2 节），阶段 4 只剩「复制 web 配置 / 配置快照回退 / 回退提示」三项。
-
-## 5. 功能与实施状态
+## 5. 功能设计
 
 ### 5.1 构建脚本时间优化（已实施）
 
@@ -108,19 +109,9 @@ desktop/                          ← 本仓库
 | 判据 | ① 连续两次构建，第二次明显快于第一次 ② 只改页面/资源类文件后的构建不触发全量编译 ③ 产物内容正确、可正常启动 |
 | 约束 | 遵守透明原则：**不得**靠外部传入「跳过哪个阶段」的标志；**不得**在流程里为某类文件或某个阶段开特例；优化对「处理的是什么」保持透明 |
 
-**实现**：功能层 `src/features/build-cache.mjs`（随同目录的 `.d.mts` 一起注入，供源仓库 `tsc -b` 编译）
-提供 `contentKey(inputs)`、`reuse(options)` 与 `reusePackedDirectory(options)`（三处 `pnpm pack` 共用的
-「缓存 packed 目录 + 发布到输出目录」语义），判断逻辑全在这一层；patch 层只把调用插进上游流程，
-一处一个目标源文件：
-
-| 目标源文件 | 插入的调用 | 效果 |
-|---|---|---|
-| `scripts/build.ts` | 整段编译缓存：键由流程算出（pin + 该指令自身 + 工具链清单 + 参与编译的注入物），`ignoreTargets` 里声明的不算 | 只改页面/资源文件时不再触发全量编译 |
-| `scripts/release/pack.ts` | 成员级 tarball 缓存：键 = 成员目录内容 + 全仓依赖解析键；复用同样要过官方 `validatePayload`；输出目录仍由 `main` 重建 | 成员没变就不重打 |
-| `apps/desktop/scripts/package-target.ts` | 两次 `release:pack` 传 `--concurrency`（上限 8）；两处不经 `release:pack` 的 pack（私有 Host、native entry）改用 `reusePackedDirectory`；未签名 `--dir` 装配按上游各阶段键 + 配置/清单复用 | 单独测打包：266 个 tarball 145s → 31.7s；那两处 pack 的字节不再每轮变；装配也不再每轮重做 |
-| `apps/desktop/scripts/prepare-dsh.ts` | 只把「装包 + 拷贝 `node_modules`」放进缓存；描述符重建、runtime smoke、`verifyDesktopRuntime` 每轮照跑 | 不重装 506 个包 |
-
-`prepare:runtime`（解压 Node + 拷 pnpm，≈6s）**不做缓存**：审查结论是这个收益不值一层维护加一个最窄的键。它每轮重跑，产出的字节确定，所以不拖累下游命中。
+**实现形态**：功能层 `src/features/build-cache.mjs` 提供 `contentKey(inputs)`、`reuse(options)` 与
+`reusePackedDirectory(options)`（三处 `pnpm pack` 共用的「缓存 packed 目录 + 发布到输出目录」语义），
+判断逻辑全在这一层；patch 层只把调用插进上游流程，一处一个目标源文件。
 
 **缓存契约**（四条，越界即 bug）：
 
@@ -136,27 +127,8 @@ desktop/                          ← 本仓库
    与 `packed/.pack-cache/<name>/`），不搬家；每个决策都往构建日志打一行
    `build-cache: <stage> hit|miss (<原因>)`。删掉这两处即回到冷缓存，不需要别的开关。
 
-**实测**（本机 Windows x64，`win-x64 --dir --unsigned`；波动主要来自机器负载，`electron-builder` 那段实测 28–73s）：
-
-| 构建 | 耗时 | 说明 |
-|---|---|---|
-| 优化前 | 4.92 min | pack dsh 单段 145s（266 个 tarball 串行）+ 全量编译 + 全量装配 |
-| 只接了 pack/dsh 缓存时 | 2.74 → 1.79 min | 冷 → 稳态（历史值，编译与装配还没接） |
-| 接上编译与装配缓存后：冷 | 3.40 min | 编译、1 个成员重打、`prepare:dsh` 安装、`--dir` 装配全部 miss |
-| 接上编译与装配缓存后：稳态 | **0.85 min** | 278 个 pack 决策（266 dsh + 9 vendor + 私有 Host + native entry）+ `build-official` + `prepare:dsh` + `package-dir` 全部 hit，0 miss |
-
-每个成员的内容键要把该成员的目录读一遍；整棵树一次哈希实测约 4s，所以这份键的计算成本可以接受。
-
-稳态连续两次构建的 `DeepSeek Harness.exe`、`resources/app.asar`、`resources/dsh/desktop-runtime.json`
-三者 sha256 完全一致 —— 命中路径复用的是同一份字节，不是「重新打包的等价物」。
-
-**未覆盖的部分**：只剩 `prepare:packages`（≈6s）；`prepare:runtime`（≈6s）按审查结论**不缓存**（不值得一层维护加一个最窄的键）。
-
-**为什么不是别的做法**：
-
-- 「整份产物内容寻址」只能让"什么都没改"变快，改一个文件仍全量重跑，不满足判据 ②。
-- 「在配置里把上游流水线拆成多阶段、自己编排」等于自研编排：上游改配方就静默偏离，官方新增阶段也不会被执行。
-- 「mtime 判据」「外部 `--skip-*` 开关」：前者在本流程里必然失效，后者把判断权推给人（决策 12）。
+接线点清单与实测数据见 [reproduce.zh.md](reproduce.zh.md) 第 4 节；为什么这么选、否掉了哪些做法，
+见 [decisions.zh.md](decisions.zh.md) 第 12、15–20、22 条。
 
 ### 5.2 阶段 4/5 功能
 
@@ -168,7 +140,7 @@ desktop/                          ← 本仓库
 | 回退提示 | 主进程在 `navigateMain(applicationUrl)` 成功后用 `executeJavaScript` 注入自绘 toast；不依赖 dsh 前端 DOM，也不改 `desktop-host` |
 | 诊断规则 | 按阶段分组、规则互不可见，沿用「首因原则」。原设计的环境层（Node/npm）与依赖层（dsh 安装）在官方架构下**直接消失**（运行时内置、版本固定），换来的新失败面决定阶段划分：① 壳与 Host 启动（内置 Node 归档、Host 进程与管道握手）② profile 与插件图（装包、`allowBuilds`、`validateDesktopPluginGraph`）③ 包管理缓存（pnpm store 可用性与跨盘、lockfile 冲突）④ 配置层（`cordis.patch.yml` 行 id 失效、快照回退）⑤ 内置 dsh 与插件版本不匹配 |
 
-## 6. 插件兼容性校验的能力边界
+#### 插件兼容性校验的能力边界（对应上表「复制 web 配置」的校验时机）
 
 一次子进程 `import()` 只能证明「这个模块能被加载」。边界必须写清，否则容易被读成「校验通过 = 能起来」：
 

@@ -27,7 +27,7 @@
 - 禁用 `directory-picker`，插入 `directory-picker-native` 与 `ui-directory-picker-native`：改用原生目录选择器
 - `connection` 注入 `credentials`
 
-关键实现：`src/main.ts`（主进程，521 行）、`src/host-process.ts`（Host 子进程）、`src/host-protocol.ts`（分帧管道协议）、`src/project-manager.ts`（profile 与插件事务）。
+关键实现：`src/main.ts`（主进程）、`src/host-process.ts`（Host 子进程）、`src/host-protocol.ts`（分帧管道协议）、`src/project-manager.ts`（profile 与插件事务）。
 
 ## 3. 终端用户怎么用
 

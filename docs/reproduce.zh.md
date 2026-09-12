@@ -1,6 +1,7 @@
 # 探索内容与复刻命令
 
-> 本文是 `docs/` 三份设计文档之一：[当前设计](design.zh.md) ｜ [重大决策与原因](decisions.zh.md) ｜ **探索内容与复刻命令**；
+> 本文是 `docs/` 三份设计文档之一：[当前设计](design.zh.md)（是什么、怎么做） ｜
+> [重大决策与原因](decisions.zh.md)（为什么） ｜ **探索内容与复刻命令**（怎么跑、怎么验证、实测到什么）；
 > 上游背景见 [desktop-guide.zh.md](desktop-guide.zh.md)。
 
 ## 1. 环境事实
@@ -20,11 +21,13 @@
 
 > 源仓库的依赖（`node_modules`）与构建产物都**不随本仓库同步**：新机器 clone 后需先安装依赖，再按第 3 节构建。
 
-## 2. 关键踩坑
+## 2. 关键踩坑与常用手段
+
+### 2.1 构建与环境
 
 | # | 现象 | 根因与对策 |
 |---|---|---|
-| R1 | `pnpm run dev:desktop` 报 `Error [TransformError]: spawn EPERM (esbuild/lib/main.js:2268)` | 构建脚本全经 `tsx`，tsx 依赖 esbuild 启动 helper 子进程（命名管道）。**对策**：受限环境用 `node --experimental-transform-types <script.ts>` 替代；见第 4 节 tsx shim |
+| R1 | `pnpm run dev:desktop` 报 `Error [TransformError]: spawn EPERM (esbuild/lib/main.js:2268)` | 构建脚本全经 `tsx`，tsx 依赖 esbuild 启动 helper 子进程（命名管道）。**对策**：受限环境用 `node --experimental-transform-types <script.ts>` 替代；见第 5 节 tsx shim |
 | R2 | 隔离失效、污染真实 `~/.dsh` | dev 启动器用 `process.env.DSH_HOME ?? 隔离目录`，外层已注入 `DSH_HOME` 时会静默走真实 home。**对策**：启动前显式赋值 |
 | R3 | 桌面端一启动，agent loop 卡死 | 与运行中的 agent 会话共用 `$DSH_HOME`。**对策**：验证时一律用独立 home |
 | R4 | 直接跑 `electron.exe <APP_ROOT>` 显示官方恢复页 | 跳过了 `prepareDevelopmentProject()`——它每次都删除并重建 `.desktop-build/development/project` 并写入运行元数据。**对策**：走完整启动器 |
@@ -35,13 +38,23 @@
 | R9 | `pnpm install` 报 `unable to open database file` | **pnpm 版本与 store 不匹配**：store 的 `index.db` 由某个大版本建立，另一个版本打不开。本机全局 pnpm 是 11.21.0，源仓库却声明 `pnpm@11.7.0`（自管理切换），两者共用同一个 `store-dir` 就冲突。**对策**：让 store 与「实际调用的 pnpm 版本」一致——本机按 11.7.0 重建；旧 store 备份在 `.pnpm-store.bak-1121` |
 | R10 | `prepare:dsh` 报 `ERR_PNPM_META_FETCH_FAIL … registry.npmjs.org … timeout` | `apps/desktop/scripts/prepare-dsh.ts` 的 `runPnpm()` **硬编码** `registry.npmjs.org`，并过滤掉 `npm_*`/`pnpm_*`/`corepack_*`/`DSH_DESKTOP_*` 环境变量、把 `XDG_CONFIG_HOME` 指向临时目录——本机任何镜像配置都进不去。**对策**：patch 层把 registry 改为读 `DSH_LOCAL_NPM_REGISTRY`（不设时仍是官方地址，行为不变） |
 | R11 | 构建报 `spawn EPERM`（esbuild helper），继而 `spawnSync git` 也 EPERM | 受限沙箱禁止命名管道与管道式子进程。**对策**：tsx shim 只能绕过 esbuild 一个点，**受限沙箱下无法完成构建**，必须在可 spawn 子进程的环境运行 |
-| R12 | 每次构建 10 分钟以上，失败后重跑仍从头开始 | 源仓库构建体系没有阶段级跳过：`scripts/build.ts` 无条件顺序跑 `build:native-system` / `build:lib` / `build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量。**已实现缓存与并行打包，见 [design.zh.md](design.zh.md) 第 5.1 节** |
+| R12 | 每次构建 10 分钟以上，失败后重跑仍从头开始 | 源仓库构建体系没有阶段级跳过：`scripts/build.ts` 无条件顺序跑 `build:native-system` / `build:lib` / `build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量。**已实现缓存与并行打包，见 [design.zh.md](design.zh.md) 第 5.1 节与本文第 4 节** |
 | R13 | 构建报 `tar (child): Cannot connect to D: resolve failed` | 在 **Git Bash** 里跑构建时，PATH 里的 MSYS `tar` 把 Windows 路径 `D:\...` 当成 `host:path`。**对策**（按可用环境二选一）：① 用 PowerShell / CMD 跑；② 只能用 Git Bash 时，把 Windows 版 tar 前置到 PATH —— `mkdir -p .cache/pathshim && ln -sf /c/Windows/System32/tar.exe .cache/pathshim/tar.exe`，然后 `PATH="$(pwd)/.cache/pathshim:$PATH" node scripts/build.mjs`（`.cache/` 已被忽略，实测可用）。**注意**：本仓库 agent 环境的 pwsh 工具受沙箱限制，node 在里面无法 spawn 子进程（`spawnSync git EPERM`，即 R11），所以本机实际走的是 ② |
+
+### 2.2 构建缓存与产物
+
+| # | 现象 | 根因与对策 |
+|---|---|---|
 | R14 | 同一成员 `pnpm pack` 两次，tarball 的 sha256 不同 | 上游打包**不是字节可复现**的：差异只在打包后 manifest 的键顺序（tar/gzip 头与文件清单一致）。缓存判据由此确定 —— 见 [decisions.zh.md](decisions.zh.md) 第 16 条 |
 | R15 | 缓存明明该命中却每轮报 `miss (no-marker)` | marker 一度放在**源仓库根**的 `.desktop-build/local-cache/`，而 `.gitignore` 只忽略 `apps/desktop/.desktop-build/` —— 根目录那份被第 3 步 `git clean -fd` 每轮删掉。**对策**：marker 一律落在 `apps/desktop/.desktop-build/targets/<target>/local-cache/`（被忽略，构建流程的各阶段都不会清它；上游 `pnpm clean` 会清整个 `.desktop-build/`，属预期的冷缓存重置） |
 | R16 | 想确认某次构建到底重做了什么 / 想强制全量重做 | 每个缓存决策都往构建日志（`.cache/build/build.log`）打一行 `build-cache: <stage> hit\|miss (<原因>)`。marker 有两处：`apps/desktop/.desktop-build/targets/<target>/local-cache/*.json`（`build-official`、`prepare-dsh-<target>`、`package-dir-<target>`）与 `.../packed/.pack-cache/<family>/*`（tarball 成员；私有 Host 与 native entry 另有 `<name>/packed/` 与 `tarball.json`）。删掉这两处即回到冷缓存；改 `src/build.config.json` 的 `checkout` 会自动让全部缓存失效 |
 | R17 | 源码一行没改，`prepare:dsh` 却每轮 `miss (key-changed)` | 有两个 `pnpm pack` **不经 `release:pack`**、因此没进成员缓存：私有 Host（`apps/desktop-host`）与 native entry（`native/system/packages/entry`）——前者由 `package-target.ts` 直接 pack，后者在 `rmSync` 后 pack。而 `pnpm pack` 字节不可复现（R14）→ 它们的 `integrity` 每轮都变 → `prepare:packages` 生成的 package set 变 → `prepare:dsh` 的键跟着变。**对策**：两处也走同一套缓存（缓存 packed 出来的目录，再拷进输出目录）。定位方法：构建前后各算一遍逐项 `contentKey`，变化的那一项就是元凶（`prepare:packages` 本身是确定的：同一输入重跑 242 个文件 0 差异） |
 | R18 | 改哪类文件会触发全量重编译？ | 编译阶段的键 = pin + 该构建指令 + 工具链清单 + **参与编译的注入物**；`src/build.config.json` 的 `ignoreTargets` 当前声明 `apps/desktop/renderer` 与 `apps/desktop/local` 不参与。因此改页面/资源（`assets/icon.png`、`src/features/renderer/`、`startup.{html,js}.patch`）只让 `--dir` 装配重做；改其他 patch（包括 `src/features/*.mjs` 本身）会让编译阶段重跑一次。**新增注入物默认算编译输入**：想让它不参与，必须在 `ignoreTargets` 里显式写上 |
+
+### 2.3 启动页与渲染进程
+
+| # | 现象 | 根因与对策 |
+|---|---|---|
 | R19 | 加载动画的 PNG 能从 shell 资源里显示吗？ | `apps/desktop/src/main.ts` 的 MIME 表只有 `.css/.html/.js/.svg`，`loading-art.png` 实际按 `application/octet-stream` 返回；但资源没有 `X-Content-Type-Options: nosniff`，Chromium 对 `<img>` 走内容嗅探 → 实测解码正常（`naturalWidth/Height` = 512×512）。**上游将来若给 shell 资源加 nosniff，这里会破** |
 | R20 | 想验证加载动画真的显示、样式没被 CSP 挡住 | dev 模式（3.3）自带主进程 inspector，从它看最省事：`fetch('http://127.0.0.1:9229/json/list')` 取 `webSocketDebuggerUrl` 连上，`Runtime.evaluate` 里用 `process.mainModule.require('electron')` 拿 `BrowserWindow`，再 `webContents.executeJavaScript()` 读 `#loading-art` 的 `naturalWidth`、`getComputedStyle().animationName`、隔 0.7s 再读 `transform`（两次不同即在动），`capturePage().toPNG()` 存图。**启动页地址是 `dsh-app://shell/startup.html`**（scheme 由 `main.ts` 的 `SCHEME` 决定，`shell://` 是错的）；别用 `webContents.loadURL` 抢导航 —— 应用自身在推进导航时会把它中断（`ERR_FAILED (-2)`），要看就自己 `new BrowserWindow()`（此时没有 preload，`startup.js` 报 `Cannot read properties of undefined (reading 'locale')`，属预期） |
 
@@ -90,7 +103,37 @@ node --experimental-transform-types scripts/dev.ts --skip-build
 实测（2026-09-12）：隔离 home 下 dev 模式能起到真实 UI（`dsh-app://app/index.html`），`.cache/dev-home` 由流程按需生成。
 dev 模式自带两个 inspector：主进程 `--inspect=127.0.0.1:9229`、渲染进程 `--remote-debugging-port=9222`（端口被占时后者静默失败，见 R20）。
 
-## 4. tsx shim（仅受限沙箱环境）
+## 4. 构建缓存的实现与实测
+
+功能层 `src/features/build-cache.mjs`（随同目录的 `.d.mts` 一起注入，供源仓库 `tsc -b` 编译）承载全部
+判断逻辑；patch 一处一个目标源文件：
+
+| 目标源文件 | 插入的调用 | 效果 |
+|---|---|---|
+| `scripts/build.ts` | 整段编译缓存：键由流程算出（pin + 该指令自身 + 工具链清单 + 参与编译的注入物），`ignoreTargets` 里声明的不算 | 只改页面/资源文件时不再触发全量编译 |
+| `scripts/release/pack.ts` | 成员级 tarball 缓存：键 = 成员目录内容 + 全仓依赖解析键；复用同样要过官方 `validatePayload`；输出目录仍由 `main` 重建 | 成员没变就不重打 |
+| `apps/desktop/scripts/package-target.ts` | 两次 `release:pack` 传 `--concurrency`（上限 8）；两处不经 `release:pack` 的 pack（私有 Host、native entry）改用 `reusePackedDirectory`；未签名 `--dir` 装配按上游各阶段键 + 配置/清单复用 | 单独测打包：266 个 tarball 145s → 31.7s；那两处 pack 的字节不再每轮变；装配也不再每轮重做 |
+| `apps/desktop/scripts/prepare-dsh.ts` | 只把「装包 + 拷贝 `node_modules`」放进缓存；描述符重建、runtime smoke、`verifyDesktopRuntime` 每轮照跑 | 不重装 506 个包 |
+
+**实测**（本机 Windows x64，`win-x64 --dir --unsigned`；波动主要来自机器负载，`electron-builder` 那段实测 28–73s）：
+
+| 构建 | 耗时 | 说明 |
+|---|---|---|
+| 优化前 | 4.92 min | pack dsh 单段 145s（266 个 tarball 串行）+ 全量编译 + 全量装配 |
+| 只接了 pack/dsh 缓存时 | 2.74 → 1.79 min | 冷 → 稳态（历史值，编译与装配还没接） |
+| 接上编译与装配缓存后：冷 | 3.40 min | 编译、1 个成员重打、`prepare:dsh` 安装、`--dir` 装配全部 miss |
+| 接上编译与装配缓存后：稳态 | **0.85 min** | 278 个 pack 决策（266 dsh + 9 vendor + 私有 Host + native entry）+ `build-official` + `prepare:dsh` + `package-dir` 全部 hit，0 miss |
+| 启动页重构后第一次重跑 | 2.2 min | 编译与 278 个 pack 决策全 hit；`prepare:dsh`、`--dir` 装配 miss（`key-changed`，未逐项定位输入差异） |
+| 紧接着再跑一次 | 36s | 全部 hit、0 miss（稳态可重复） |
+
+每个成员的内容键要把该成员的目录读一遍；整棵树一次哈希实测约 4s，所以这份键的计算成本可以接受。
+
+稳态连续两次构建的 `DeepSeek Harness.exe`、`resources/app.asar`、`resources/dsh/desktop-runtime.json`
+三者 sha256 完全一致 —— 命中路径复用的是同一份字节，不是「重新打包的等价物」。
+
+**未覆盖的部分**：只剩 `prepare:packages`（≈6s）；`prepare:runtime`（≈6s）按决策 22 不接缓存。
+
+## 5. tsx shim（仅受限沙箱环境）
 
 构建脚本全经 `tsx`，而受限沙箱禁止 esbuild 的 helper 子进程（R1）。可把 tsx 换成 Node 原生 TS 转发：
 
@@ -113,7 +156,7 @@ pnpm install --frozen-lockfile
 > **shim 的能力边界**：它只替换 `tsx` 一个入口。受限沙箱还会拒绝其它管道式子进程
 > （实测 `spawnSync git` 同样 EPERM），所以**受限沙箱下无法完成构建**，必须在可 spawn 子进程的环境运行（R11）。
 
-## 5. 验证方式
+## 6. 验证方式
 
 | 对象 | 方式 |
 |---|---|

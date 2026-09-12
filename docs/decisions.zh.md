@@ -1,6 +1,7 @@
 # 重大决策与原因
 
-> 本文是 `docs/` 三份设计文档之一：[当前设计](design.zh.md) ｜ **重大决策与原因** ｜ [探索内容与复刻命令](reproduce.zh.md)；
+> 本文是 `docs/` 三份设计文档之一：[当前设计](design.zh.md)（是什么、怎么做） ｜ **重大决策与原因**（为什么） ｜
+> [探索内容与复刻命令](reproduce.zh.md)（怎么跑、怎么验证、实测到什么）；
 > 上游背景见 [desktop-guide.zh.md](desktop-guide.zh.md)。
 
 | # | 决策 | 原因 |
@@ -22,7 +23,8 @@
 | 15 | **构建缓存以「输入内容键 + 上游 pin + 产物复核」判定，宁可多算不可漏算** | mtime 不能当判据：流程每轮都 `git reset --hard` + 复制 + 打补丁，mtime 必然被刷新。命中要求 key 相同、marker 记录的产物摘要（若记了）复核通过、调用方给的 `verify` 为真；任一条不满足一律重做。**pin 由功能层混进每个键**（流程注入 `DSH_UPSTREAM_CHECKOUT`），换提交后所有缓存自动失效 —— 产物属于某个确定的官方版本，不能靠人去删目录 |
 | 16 | **上游 `pnpm pack` 不是字节可复现的，缓存只承诺「复用已校验过的字节」** | 实测：同一成员连打两次，只有打包后 `dependencies` 段的键顺序不同（tar/gzip 头与文件清单一致）。所以不能拿「复用产物 == 重新打包产物」当判据，也不需要为此作废缓存 —— 复用的就是上一次已经校验通过的字节 |
 | 17 | **打包并发数写在补丁里（上限 8），不做成外部开关** | 决策 12：判断权不推给人。实测 `--concurrency 8` 把 266 个 tarball 从 145s 压到 31.7s，且文件清单与语义与串行一致（逐条对比过 5 个成员）。上限取 8 是因为成本是每个成员一个包管理器进程，再往上实测无收益 |
-| 18 | **缓存 marker 落在源仓库自己的被忽略构建目录里** | 决策 8：不搬家、不重定向。编译、`prepare:dsh` 与 `--dir` 装配的 marker 在 `apps/desktop/.desktop-build/targets/<target>/local-cache/`，tarball 成员的在 `packed/.pack-cache/<name>/`。构建流程的各阶段都不会清它们，所以 marker 不会与它记录的产物一起消失；上游 `pnpm clean` 会清空整个 `.desktop-build/`（含这两处），那属于预期的冷缓存重置 |
-| 19 | **编译阶段的键由流程算，忽略清单必须显式声明** | 编译输入无法在功能层自证（取决于本仓库注入了什么），所以由流程按配置算键并注入（与 `npm_execpath` 同类，属环境事实）。`ignoreTargets` 只允许显式列出"不参与该指令"的注入目标（当前是 `apps/desktop/renderer` 与 `apps/desktop/local`）。**默认全部算输入**：新加的 copy/patch 只要没被声明忽略，就只会让缓存多失效一次，不会出现"输入变了却命中"。复用前跑上游 `readClientBuildRecord` 复核客户端产物 |
+| 18 | **缓存 marker 落在源仓库自己的被忽略构建目录里** | 决策 8：不搬家、不重定向。marker 必须放在任何阶段都不会清的位置，否则它会和自己记录的产物一起消失；上游 `pnpm clean` 清空整个 `.desktop-build/` 属预期的冷缓存重置。具体位置与删除方式见 reproduce R15/R16 |
+| 19 | **编译阶段的键由流程算，忽略清单必须显式声明** | 编译输入无法在功能层自证（取决于本仓库注入了什么），所以由流程按配置算键并注入（与 `npm_execpath` 同类，属环境事实）。`ignoreTargets` 只允许显式列出「不参与该指令」的注入目标（当前清单见 design 第 3 节）。**默认全部算输入**：新增的 copy/patch 只要没被声明忽略，就只会让缓存多失效一次，不会出现「输入变了却命中」。复用前跑上游 `readClientBuildRecord` 复核客户端产物 |
 | 20 | **`electron-builder --dir` 复用只限本地未签名路径** | 安装包/签名/公证必须真跑。判据 = 上游各阶段 marker（它们已钉住 dsh 与 runtime 的字节，不必重新哈希 600MB）+ `electron-builder.config.mjs`/`apps/desktop/package.json`/`pnpm-lock.yaml` + `exe`/`app.asar`/`desktop-runtime.json` 三份摘要 + 复用前跑 `afterPack` 里同一支 `verifyDesktopRuntime`。**已知残余**：Electron 自带文件树不逐字节复核（它来自 electron-builder 自己的缓存），装配中途崩溃留下的半份目录理论上可能被命中 |
 | 21 | **渲染进程的适配层/功能层用经典脚本 + 全局对象组装，不用 ESM** | 官方 CSP 是 `script-src 'self'`，渲染进程只能加载同源文件；官方 `startup.js` 又是经典脚本，页面里没有模块上下文可以 import。两层因此各占一个同源经典脚本，经 `dshStartupPage` / `dshLoadingArt` 两个全局对象组装：功能层仍然只碰适配层暴露的接口，也不必要求官方把 `startup.js` 改成模块（接线顺序即依赖顺序，由 patch 写死） |
+| 22 | **构建时间优化只做「内容键 + 复用」，不重排上游流水线** | 否掉的三种做法：「整份产物内容寻址」只能让「什么都没改」变快，改一个文件仍全量重跑，不满足判据 ②；「在配置里把上游流水线拆成多阶段、自己编排」等于自研编排，上游改配方就静默偏离、官方新增的阶段也不会被执行；「mtime 判据 / 外部 `--skip-*` 开关」前者在本流程里必然失效（每轮 reset + 复制 + 打补丁都刷新 mtime），后者把判断权推给人（决策 12）。`prepare:runtime`（解压 Node + 拷 pnpm，≈6s）不接缓存：收益不值一层维护加一个最窄的键，且它每轮产物字节确定，不拖累下游命中 |
