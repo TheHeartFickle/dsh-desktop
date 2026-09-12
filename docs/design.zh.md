@@ -14,7 +14,7 @@ patch 层 ──行插入调用──▶ 功能层(func) ──调用──▶ �
 
 | 层 | 目录 | 职责 | 形态 | 何时修改 |
 |---|---|---|---|---|
-| **适配层** | `src/upstream/` | 把官方**内部接口**固定成稳定接口：官方内部实现的变动在这一层被吸收，向上返回所需的数据结构 | **独立文件** | 官方内部实现变动时（接口的拼接） |
+| **适配层** | `src/adaptator/` | 把官方**内部接口**固定成稳定接口：官方内部实现的变动在这一层被吸收，向上返回所需的数据结构 | **独立文件** | 官方内部实现变动时（接口的拼接） |
 | **功能层** | `src/features/` | 功能实现（例：启动前的配置同步页面），以函数封装，只依赖适配层 | **独立文件** | **需求**变动时（否则不修改） |
 | **patch 层** | `src/patch/`（每个目标源文件一个 `<name>.<extension>.patch`） | 用 git 做**行插入**：把已封装好的功能函数插进官方流程的指定位置 | git patch | 每次接线 |
 
@@ -35,6 +35,9 @@ desktop/                          ← 本仓库
     adaptator/                    ← 适配层（独立文件）
     features/                     ← 功能层（独立文件）
     patch/                        ← patch 层：每个目标源文件一个 patch
+      build.ts.patch
+      pack.ts.patch
+      package-target.ts.patch
       prepare-dsh.ts.patch
       runtime-payload-smoke.mjs.patch
       startup.html.patch
@@ -72,8 +75,12 @@ desktop/                          ← 本仓库
 - **第 6 步**：构建指令写在配置里，脚本不硬编码任何上游脚本名或参数。
 
 配置的路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
-`copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。`npm_execpath` 不写进配置 ——
-它由构建脚本按源仓库 `packageManager` 声明解析后注入，属环境事实而非业务配置。
+`copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。`npm_execpath`、`DSH_UPSTREAM_CHECKOUT`
+与 `DSH_LOCAL_BUILD_KEY` 不写进配置 —— 它们由构建脚本解析或算出后注入，属环境事实而非业务配置。
+
+`build[].ignoreTargets` 声明"哪些注入目标不参与这条构建指令的输入"（当前是 `apps/desktop/renderer`
+与 `apps/desktop/local`）：**没被声明的注入物一律算输入**，因此新增 copy/patch 只会让该阶段的缓存多失效
+一次，不会出现"输入变了却命中"。缓存契约见第 5.1 节。
 
 ## 4. 当前状态
 
@@ -90,16 +97,66 @@ desktop/                          ← 本仓库
 **与设计不符、需要重构的现状**：加载动画目前由 patch 直接修改 `renderer/startup.{html,css,js}` 实现，
 功能逻辑没有独立成功能层文件。按三层设计，它应当是「功能层封装 + patch 只插入调用」。
 
-## 5. 待实施
+## 5. 功能与实施状态
 
-### 5.1 构建脚本时间优化（当前功能）
+### 5.1 构建脚本时间优化（已实施）
 
 | 项 | 内容 |
 |---|---|
-| 问题 | 源仓库的构建体系没有阶段级跳过：编排脚本 `scripts/build.ts` 无条件顺序跑 `build:native-system`、`build:lib`、`build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`）。重复构建因此稳定落在 10 分钟量级，而多数时候真正变化的只有一两个文件 |
+| 问题 | 源仓库的构建体系没有阶段级跳过：`release:pack` 对 266 个包逐个 `pnpm pack`（串行 0.54s/个）；`prepare:runtime` 每轮重解压；`prepare:dsh` 在干净临时目录里重装 506 个包；`electron-builder` 全量重装配。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`） |
 | 目标 | 重复构建的时间显著下降；只改页面/资源类文件时，不重跑编译与打包 |
 | 判据 | ① 连续两次构建，第二次明显快于第一次 ② 只改页面/资源类文件后的构建不触发全量编译 ③ 产物内容正确、可正常启动 |
 | 约束 | 遵守透明原则：**不得**靠外部传入「跳过哪个阶段」的标志；**不得**在流程里为某类文件或某个阶段开特例；优化对「处理的是什么」保持透明 |
+
+**实现**：功能层 `src/features/build-cache.mjs`（随同目录的 `.d.mts` 一起注入，供源仓库 `tsc -b` 编译）
+提供 `contentKey(inputs)`、`reuse(options)` 与 `reusePackedDirectory(options)`（三处 `pnpm pack` 共用的
+「缓存 packed 目录 + 发布到输出目录」语义），判断逻辑全在这一层；patch 层只把调用插进上游流程，
+一处一个目标源文件：
+
+| 目标源文件 | 插入的调用 | 效果 |
+|---|---|---|
+| `scripts/build.ts` | 整段编译缓存：键由流程算出（pin + 该指令自身 + 工具链清单 + 参与编译的注入物），`ignoreTargets` 里声明的不算 | 只改页面/资源文件时不再触发全量编译 |
+| `scripts/release/pack.ts` | 成员级 tarball 缓存：键 = 成员目录内容 + 全仓依赖解析键；复用同样要过官方 `validatePayload`；输出目录仍由 `main` 重建 | 成员没变就不重打 |
+| `apps/desktop/scripts/package-target.ts` | 两次 `release:pack` 传 `--concurrency`（上限 8）；两处不经 `release:pack` 的 pack（私有 Host、native entry）改用 `reusePackedDirectory`；未签名 `--dir` 装配按上游各阶段键 + 配置/清单复用 | 单独测打包：266 个 tarball 145s → 31.7s；那两处 pack 的字节不再每轮变；装配也不再每轮重做 |
+| `apps/desktop/scripts/prepare-dsh.ts` | 只把「装包 + 拷贝 `node_modules`」放进缓存；描述符重建、runtime smoke、`verifyDesktopRuntime` 每轮照跑 | 不重装 506 个包 |
+
+`prepare:runtime`（解压 Node + 拷 pnpm，≈6s）**不做缓存**：审查结论是这个收益不值一层维护加一个最窄的键。它每轮重跑，产出的字节确定，所以不拖累下游命中。
+
+**缓存契约**（四条，越界即 bug）：
+
+1. 键只允许比真实输入**更宽**（最多白重做），不允许更窄（命中而输入已变 = 陈旧产物）。**不用 mtime**：
+   流程每轮 `git reset --hard`、复制、打补丁都会刷新 mtime，mtime 判据必然失效。往键里塞目录时，
+   那个目录**不能包含本阶段自己写出的产物**（`.desktop-build`、`dist`、`*.tsbuildinfo`），否则键自我引用。
+2. **上游 pin 由功能层混进每个键**（流程注入 `DSH_UPSTREAM_CHECKOUT`）：产物属于某个确定的官方版本，
+   换提交后所有缓存自动失效，不需要人去删目录。
+3. 命中不等于产物没问题：能记摘要的产物在 marker 里记下字节数与 sha256，命中时逐条复核；整棵大树
+   （如 `dsh/node_modules`）不逐字节复核，交给调用方传的 `verify` 句柄（`prepare:dsh` 传的就是上游
+   `verifyDesktopRuntime`，它按描述符核对整棵树）。
+4. marker 落在源仓库自己的被忽略构建目录（`apps/desktop/.desktop-build/targets/<target>/local-cache/`
+   与 `packed/.pack-cache/<name>/`），不搬家；每个决策都往构建日志打一行
+   `build-cache: <stage> hit|miss (<原因>)`。删掉这两处即回到冷缓存，不需要别的开关。
+
+**实测**（本机 Windows x64，`win-x64 --dir --unsigned`；波动主要来自机器负载，`electron-builder` 那段实测 28–73s）：
+
+| 构建 | 耗时 | 说明 |
+|---|---|---|
+| 优化前 | 4.92 min | pack dsh 单段 145s（266 个 tarball 串行）+ 全量编译 + 全量装配 |
+| 只接了 pack/dsh 缓存时 | 2.74 → 1.79 min | 冷 → 稳态（历史值，编译与装配还没接） |
+| 接上编译与装配缓存后：冷 | 3.40 min | 编译、1 个成员重打、`prepare:dsh` 安装、`--dir` 装配全部 miss |
+| 接上编译与装配缓存后：稳态 | **0.85 min** | 278 个 pack 决策（266 dsh + 9 vendor + 私有 Host + native entry）+ `build-official` + `prepare:dsh` + `package-dir` 全部 hit，0 miss |
+
+每个成员的内容键要把该成员的目录读一遍；整棵树一次哈希实测约 4s，所以这份键的计算成本可以接受。
+
+稳态连续两次构建的 `DeepSeek Harness.exe`、`resources/app.asar`、`resources/dsh/desktop-runtime.json`
+三者 sha256 完全一致 —— 命中路径复用的是同一份字节，不是「重新打包的等价物」。
+
+**未覆盖的部分**：只剩 `prepare:packages`（≈6s）；`prepare:runtime`（≈6s）按审查结论**不缓存**（不值得一层维护加一个最窄的键）。
+
+**为什么不是别的做法**：
+
+- 「整份产物内容寻址」只能让"什么都没改"变快，改一个文件仍全量重跑，不满足判据 ②。
+- 「在配置里把上游流水线拆成多阶段、自己编排」等于自研编排：上游改配方就静默偏离，官方新增阶段也不会被执行。
+- 「mtime 判据」「外部 `--skip-*` 开关」：前者在本流程里必然失效，后者把判断权推给人（决策 12）。
 
 ### 5.2 阶段 4/5 功能
 

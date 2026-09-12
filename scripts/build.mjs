@@ -10,10 +10,11 @@
  *   6. 按 build 列表在源仓库执行构建指令
  *
  * 本脚本不含任何源仓库脚本名、路径、提交号、镜像地址的硬编码 —— 这些都在配置里。
- * 路径基准：`upstream` 相对仓库根；`copy[].from` 相对 `src/`；`copy[].to`、`patches[].target`、
- * `build[].cwd` 相对源仓库根。
+ * 路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
+ * `copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。
  */
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -129,6 +130,50 @@ function resolvePnpmEntry() {
   return entry
 }
 
+/**
+ * 算一条构建指令的输入键：pin + 该指令本身 + 工具链清单 + 参与该指令的注入物内容。
+ *
+ * 注入物默认**全部**算输入；配置里用 `ignoreTargets` 显式忽略的路径不算（例如页面/资源文件不参与编译）。
+ * 因此漏项只可能朝"多算"方向：新加的 copy/patch 只要没被声明忽略，就会让键变化、白白重做一次，
+ * 而不会出现"输入变了却命中"的陈旧产物。
+ */
+function buildStageKey(entry) {
+  const ignored = entry.ignoreTargets ?? []
+  const ignoredBy = target => ignored.some(prefix => target === prefix || target.startsWith(`${prefix}/`))
+  const hash = createHash('sha256')
+  const absorbFile = (absolute, label) => {
+    hash.update(`${label.replaceAll('\\', '/')}\u0000${readFileSync(absolute)}\u0000`)
+  }
+  const absorbTree = (absolute, prefix) => {
+    for (const name of readdirSync(absolute).sort()) {
+      const child = join(absolute, name)
+      const childStats = statSync(child)
+      if (childStats.isDirectory()) absorbTree(child, `${prefix}/${name}`)
+      else if (childStats.isFile()) absorbFile(child, `${prefix}/${name}`)
+    }
+  }
+  hash.update(`checkout\u0000${config.checkout}\u0000`)
+  hash.update(`command\u0000${JSON.stringify([entry.cwd, entry.command, entry.env ?? {}, ignored])}\u0000`)
+  for (const manifest of ['package.json', 'pnpm-lock.yaml']) {
+    const path = join(upstream, manifest)
+    if (existsSync(path)) absorbFile(path, manifest)
+  }
+  for (const copy of config.copy) {
+    if (ignoredBy(copy.to)) continue
+    const from = resolve(SRC_DIR, copy.from)
+    if (!existsSync(from)) continue
+    const stats = statSync(from)
+    if (stats.isDirectory()) absorbTree(from, `copy:${copy.to}`)
+    else absorbFile(from, `copy:${copy.to}`)
+  }
+  for (const patch of config.patches) {
+    if (ignoredBy(patch.target)) continue
+    const file = resolve(SRC_DIR, patch.file)
+    if (existsSync(file)) absorbFile(file, `patch:${patch.target}`)
+  }
+  return hash.digest('hex')
+}
+
 const pnpmEntry = resolvePnpmEntry()
 mkdirSync(LOG_DIR, { recursive: true })
 rmSync(LOG_PATH, { force: true })
@@ -138,7 +183,16 @@ for (const entry of config.build) {
   const cwd = resolve(upstream, entry.cwd)
   const [command, ...args] = entry.command
   if (command === undefined) fail('build.command 为空')
-  const environment = { ...process.env, ...entry.env, npm_execpath: pnpmEntry }
+  // `npm_execpath`、`DSH_UPSTREAM_CHECKOUT` 与 `DSH_LOCAL_BUILD_KEY` 同属环境事实：由流程按配置解析后
+  // 注入，不写进配置。pin 让换提交后所有缓存失效；构建键按"忽略页面/资源注入物"的规则算，供
+  // `build:official` 这类阶段判定能否跳过。
+  const environment = {
+    ...process.env,
+    ...entry.env,
+    npm_execpath: pnpmEntry,
+    DSH_UPSTREAM_CHECKOUT: config.checkout,
+    DSH_LOCAL_BUILD_KEY: buildStageKey(entry),
+  }
   const fd = openSync(LOG_PATH, 'a')
   const result = spawnSync(command, args, { cwd, env: environment, stdio: ['ignore', fd, fd] })
   closeSync(fd)

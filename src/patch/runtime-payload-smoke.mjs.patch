@@ -1,12 +1,12 @@
 diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
-index da2d5c478d..400cd22a57 100644
+index da2d5c478d..0a75ec89a5 100644
 --- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 +++ b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 @@ -6,6 +6,7 @@ import { rm } from 'node:fs/promises'
  import { createRequire } from 'node:module'
  import { tmpdir } from 'node:os'
  import { join, resolve } from 'node:path'
-+import { loadOrSkip } from '../../.local-desktop/features/smoke-tolerance.mjs'
++import { loadOrSkip } from '../../local/features/smoke-tolerance.mjs'
  
  const runtime = process.argv[2]
  assert.ok(runtime, 'Pass the filtered resources/dsh directory')

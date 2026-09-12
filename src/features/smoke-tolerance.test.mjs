@@ -1,8 +1,8 @@
 /**
  * 实现层单测：`node --test src/features/smoke-tolerance.test.mjs`
  *
- * 同时覆盖一层隐式契约：本文件 import 实现层、实现层 import `../upstream/smoke.mjs`——
- * 该相对路径在仓库内（`src/`）与注入后（`.local-desktop/`）指向同一结构，两层必须始终是兄弟目录。
+ * 同时覆盖一层隐式契约：本文件 import 实现层、实现层 import `../adaptator/smoke.mjs`——
+ * 该相对路径在仓库内（`src/`）与注入后（源仓库的 `apps/desktop/local/`）指向同一结构，两层必须始终是兄弟目录。
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'

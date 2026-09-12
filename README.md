@@ -2,7 +2,7 @@
 
 在官方 dsh 桌面端（上游 `apps/desktop`）之上叠加本地定制。
 
-定制 = **独立文件**（适配层 + 功能层）+ **git patch 行插入**（接线）。本仓库的构建脚本按 本仓库的构建脚本按 `src/build.config.json`
+定制 = **独立文件**（适配层 + 功能层）+ **git patch 行插入**（接线）。本仓库的构建脚本按 `src/build.config.json`
 把文件复制到指定位置、打上 patch，再进入源仓库执行它自己的构建指令。
 
 - 源仓库**不进入本仓库跟踪**：`deepseek-harness/` 内含独立 `.git`，各机器自行 clone
@@ -36,7 +36,7 @@ docs/                       设计与决策文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/design.zh.md](docs/design.zh.md) | 当前设计：三层职责、构建流程、当前状态、待实施（含构建脚本时间优化） |
+| [docs/design.zh.md](docs/design.zh.md) | 当前设计：三层职责、构建流程、当前状态、功能与实施状态 |
 | [docs/decisions.zh.md](docs/decisions.zh.md) | 重大决策与原因 |
 | [docs/reproduce.zh.md](docs/reproduce.zh.md) | 环境事实、关键踩坑、复刻命令 |
 | [docs/desktop-guide.zh.md](docs/desktop-guide.zh.md) | 官方桌面端探索记录（上游背景） |

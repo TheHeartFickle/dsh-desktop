@@ -1,0 +1,73 @@
+diff --git a/scripts/build.ts b/scripts/build.ts
+index e64fd1486e..e79efaaf7b 100644
+--- a/scripts/build.ts
++++ b/scripts/build.ts
+@@ -2,17 +2,19 @@
+ 
+ import { spawnSync } from 'node:child_process'
+ import { rmSync } from 'node:fs'
+-import { resolve } from 'node:path'
++import { join, resolve } from 'node:path'
+ import { parseArgs } from 'node:util'
+ import {
+   CLIENT_BUILD_RECORD_PATH,
+   CLIENT_BUILD_PROFILE_SELECTOR,
+   clientBuildProcessEnvironment,
++  readClientBuildRecord,
+   repositoryClientBuildEnvironment,
+   resolveClientBuildEnvironment,
+   writeClientBuildRecord,
+ } from './client-build-environment.ts'
+ import { pnpmInvocation } from './pnpm-invocation.ts'
++import { reuse } from '../apps/desktop/local/features/build-cache.mjs'
+ 
+ /** Run one package script through the package manager that invoked this build. */
+ function runScript(script: string, environment: NodeJS.ProcessEnv): void {
+@@ -29,7 +31,7 @@ function runScript(script: string, environment: NodeJS.ProcessEnv): void {
+ }
+ 
+ /** Run the full build selected by `--profile` or `DSH_BUILD_CLIENT_PROFILE`. */
+-function main(): void {
++async function main(): Promise<void> {
+   const { values } = parseArgs({
+     options: { profile: { type: 'string' } },
+     allowPositionals: false,
+@@ -40,14 +42,29 @@ function main(): void {
+   const clientEnvironment = resolveClientBuildEnvironment(repositoryEnvironment, profile)
+   const buildEnvironment = clientBuildProcessEnvironment(process.env, clientEnvironment)
+ 
+-  rmSync(resolve(root, CLIENT_BUILD_RECORD_PATH), { force: true })
+-  runScript('build:native-system', buildEnvironment)
+-  runScript('build:lib', buildEnvironment)
+-  runScript('build:web', buildEnvironment)
+-  const record = writeClientBuildRecord(root, clientEnvironment)
+-  console.log(
+-    `build: recorded ${String(record.artifacts.fileCount)} client artifact(s) with ${String(Object.keys(record.environment).length)} public value(s)`,
+-  )
++  // Everything this stage compiles is pinned by the commit plus the injected files the caller keyed in
++  // `DSH_LOCAL_BUILD_KEY`; without that key (a bare `pnpm run build:official`) the stage is uncached.
++  await reuse({
++    stage: 'build-official',
++    key: process.env.DSH_LOCAL_BUILD_KEY,
++    marker: join(root, 'apps/desktop/.desktop-build/local-cache/build-official.json'),
++    outputs: [
++      resolve(root, CLIENT_BUILD_RECORD_PATH),
++      join(root, 'apps/desktop/lib'),
++      join(root, 'apps/desktop-host/lib'),
++    ],
++    verify: () => readClientBuildRecord(root),
++    produce: () => {
++      rmSync(resolve(root, CLIENT_BUILD_RECORD_PATH), { force: true })
++      runScript('build:native-system', buildEnvironment)
++      runScript('build:lib', buildEnvironment)
++      runScript('build:web', buildEnvironment)
++      const record = writeClientBuildRecord(root, clientEnvironment)
++      console.log(
++        `build: recorded ${String(record.artifacts.fileCount)} client artifact(s) with ${String(Object.keys(record.environment).length)} public value(s)`,
++      )
++    },
++  })
+ }
+ 
+-if (import.meta.main) main()
++if (import.meta.main) await main()

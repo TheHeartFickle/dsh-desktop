@@ -1,0 +1,91 @@
+diff --git a/scripts/release/pack.ts b/scripts/release/pack.ts
+index 6f187e83af..c90bd5c235 100644
+--- a/scripts/release/pack.ts
++++ b/scripts/release/pack.ts
+@@ -7,31 +7,59 @@
+  * ([rationale](../../.agents/notes/implemented/process/2026-08-10-npm-release-sequences.md)).
+  */
+ 
+-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+-import { join, resolve } from 'node:path'
++import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
++import { basename, join, resolve } from 'node:path'
+ import { parseArgs } from 'node:util'
+ import { pnpmInvocation } from '../pnpm-invocation.ts'
+ import { releaseFamily, tarballName, type ReleaseFamily, type ReleaseMember } from './families.ts'
+ import { isEntry, runConcurrent } from './process.ts'
+ import { PUBLISH_ORDER_FILE, tarballFiles } from './tarball.ts'
++import { contentKey, reuse } from '../../apps/desktop/local/features/build-cache.mjs'
+ 
+ /** Where pack output lands when `--out` is omitted. */
+ const DEFAULT_OUTPUT = 'dist/npm'
+ 
++/** Sibling of the output directory that keeps previously packed members and their cache markers. */
++const PACK_CACHE_DIRECTORY = '.pack-cache'
++
+ /**
+  * Pack one member and check what its tarball carries.
++ *
++ * A member whose directory content and dependency resolution are unchanged reuses the tarball an
++ * earlier pack cached. `pnpm pack` rewrites the packed manifest with a per-run key order, so its
++ * bytes are not reproducible; the cached bytes stay the ones an earlier run already validated, and
++ * `main` still rebuilds the destination from scratch so no stale member can survive into it.
+  * @param family - the release family being packed.
+  * @param member - the member to pack.
+  * @param destination - absolute output directory.
++ * @param sharedKey - dependency-resolution key shared by every member of this pack run.
+  * @returns The tarball filename.
+  */
+-async function packMember(family: ReleaseFamily, member: ReleaseMember, destination: string): Promise<string> {
+-  const invocation = pnpmInvocation(['--dir', member.directory, 'pack', '--pack-destination', destination])
+-  await runConcurrent(invocation.command, invocation.args)
+-
++async function packMember(
++  family: ReleaseFamily,
++  member: ReleaseMember,
++  destination: string,
++  sharedKey: string,
++): Promise<string> {
+   const filename = tarballName(member)
+   const tarball = join(destination, filename)
+-  if (!existsSync(tarball)) throw new Error(`${member.name} produced no tarball at ${tarball}`)
++  const cacheDirectory = join(destination, '..', PACK_CACHE_DIRECTORY, basename(destination))
++  const cachedTarball = join(cacheDirectory, filename)
++  await reuse({
++    stage: `pack-${family.id}-${filename}`,
++    key: contentKey([member.directory], { extra: sharedKey }),
++    marker: join(cacheDirectory, `${filename}.json`),
++    outputs: [cachedTarball],
++    produce: async () => {
++      const invocation = pnpmInvocation(['--dir', member.directory, 'pack', '--pack-destination', destination])
++      await runConcurrent(invocation.command, invocation.args)
++      if (!existsSync(tarball)) throw new Error(`${member.name} produced no tarball at ${tarball}`)
++      copyFileSync(tarball, cachedTarball)
++    },
++  })
++  // Single-file publish: `main` owns the destination and rebuilds it before packing, so this needs
++  // neither `reusePackedDirectory`'s directory clearing nor its multi-file publish.
++  if (!existsSync(tarball)) copyFileSync(cachedTarball, tarball)
+   family.validatePayload(member, tarballFiles(tarball))
+   return filename
+ }
+@@ -68,6 +96,10 @@ async function main(): Promise<void> {
+   rmSync(destination, { recursive: true, force: true })
+   mkdirSync(destination, { recursive: true })
+ 
++  // Dependency resolution is the same for every member, so it is hashed once and mixed into each
++  // member's key instead of being re-read and re-hashed per member.
++  const sharedKey = contentKey(['package.json', 'pnpm-lock.yaml'])
++
+   // Members pack in a bounded pool; the recorded publish order stays the
+   // members' order regardless of completion order, because each worker writes
+   // its result at the member's own position.
+@@ -79,7 +111,7 @@ async function main(): Promise<void> {
+       cursor += 1
+       const member = members[index]
+       if (member === undefined) break
+-      order[index] = await packMember(family, member, destination)
++      order[index] = await packMember(family, member, destination, sharedKey)
+     }
+   }))
+   writeFileSync(join(destination, PUBLISH_ORDER_FILE), `${order.join('\n')}\n`)

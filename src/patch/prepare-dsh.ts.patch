@@ -1,16 +1,25 @@
 diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
-index d3f9dae8a3..1cde55de62 100644
+index d3f9dae8a3..b3a2c4d6ce 100644
 --- a/apps/desktop/scripts/prepare-dsh.ts
 +++ b/apps/desktop/scripts/prepare-dsh.ts
-@@ -31,7 +31,6 @@ const APP_ROOT = resolve(import.meta.dirname, '..')
+@@ -26,12 +26,15 @@ import {
+ } from './macos-runtime.ts'
+ import { resolveDesktopBuildTarget, resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
+ import { desktopRuntimeFileExclusion } from './runtime-file-policy.ts'
++import { contentKey, reuse } from '../local/features/build-cache.mjs'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
++const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
  const BUILD_PATHS = resolveDesktopTargetBuildPaths()
++/** Cache markers live in the ignored desktop build directory; anything at the repository root is deleted by `git clean -fd`. */
++const CACHE_ROOT = join(BUILD_PATHS.root, 'local-cache')
  const DSH_OUTPUT_ROOT = BUILD_PATHS.dsh
  const BUILD_ROOT = mkdtempSync(join(tmpdir(), 'dsh-desktop-runtime-'))
 -const STORE_ROOT = join(BUILD_ROOT, 'store')
  const RUNTIME_ROOT = BUILD_PATHS.runtime
  const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
  const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
-@@ -70,8 +69,7 @@ function runPnpm(args: readonly string[]): Promise<void> {
+@@ -70,8 +73,7 @@ function runPnpm(args: readonly string[]): Promise<void> {
      writeFileSync(userConfig, '')
      const child = spawn(NODE, [
        PNPM,
@@ -20,7 +29,7 @@ index d3f9dae8a3..1cde55de62 100644
        '--config.enable-global-virtual-store=false',
        `--config.userconfig=${userConfig}`,
        command,
-@@ -82,13 +80,10 @@ function runPnpm(args: readonly string[]): Promise<void> {
+@@ -82,13 +84,10 @@ function runPnpm(args: readonly string[]): Promise<void> {
          ...Object.fromEntries(Object.entries(process.env).filter(([name]) => (
            name !== 'NODE_OPTIONS' && name !== 'NODE_PATH' && !/^DSH_DESKTOP_/u.test(name) && !/^(?:npm|pnpm|corepack)_/iu.test(name)
          ))),
@@ -35,11 +44,72 @@ index d3f9dae8a3..1cde55de62 100644
        },
        stdio: 'inherit',
      })
-@@ -103,7 +98,6 @@ function runPnpm(args: readonly string[]): Promise<void> {
+@@ -101,29 +100,50 @@ function runPnpm(args: readonly string[]): Promise<void> {
+ }
+ 
  async function main(): Promise<void> {
-   rmSync(DSH_OUTPUT_ROOT, { recursive: true, force: true })
-   rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
+-  rmSync(DSH_OUTPUT_ROOT, { recursive: true, force: true })
+-  rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
 -  mkdirSync(STORE_ROOT, { recursive: true })
    try {
      const release = desktopRelease()
-     copyFileSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGE_SET_FILE), join(BUILD_ROOT, DESKTOP_PACKAGE_SET_FILE))
+-    copyFileSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGE_SET_FILE), join(BUILD_ROOT, DESKTOP_PACKAGE_SET_FILE))
+-    cpSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGES_DIR), join(BUILD_ROOT, DESKTOP_PACKAGES_DIR), { recursive: true })
+-    createRuntimeProjectMetadata(BUILD_ROOT, release)
+-    await runPnpm(['install', '--lockfile-only'])
+-    verifyDesktopCoreLockfile(
+-      readFileSync(join(BUILD_ROOT, 'pnpm-lock.yaml'), 'utf8'),
+-      readDesktopCorePackageSet(BUILD_ROOT, release.version),
+-    )
+-    await runPnpm(['install', '--prod', '--frozen-lockfile', '--trust-lockfile'])
+-    const packageSet = readDesktopCorePackageSet(BUILD_ROOT, release.version)
+     const targetName = resolveDesktopBuildTarget()
+     const target = { platform: process.platform, arch: targetName.endsWith('arm64') ? 'arm64' : 'x64' }
+-    const modules = join(BUILD_ROOT, 'node_modules')
+-    mkdirSync(DSH_OUTPUT_ROOT, { recursive: true })
+-    cpSync(modules, join(DSH_OUTPUT_ROOT, 'node_modules'), {
+-      recursive: true, dereference: true,
+-      filter: source => desktopRuntimeFileExclusion(relative(modules, source), target) === undefined,
++    await reuse({
++      stage: `prepare-dsh-${targetName}`,
++      key: contentKey([
++        PACKAGE_SET_ROOT,
++        RUNTIME_ROOT,
++        'apps/desktop/src',
++        'apps/desktop/scripts',
++        'apps/desktop/package.json',
++        'apps/desktop/local',
++        'apps/desktop/tests/fixtures/runtime-payload-smoke.mjs',
++        'package.json',
++      ], {
++        base: REPOSITORY_ROOT,
++        extra: `${release.version}\n${targetName}\n${process.env.DSH_DESKTOP_APP_ID ?? ''}\n${process.env.DSH_LOCAL_NPM_REGISTRY ?? ''}`,
++      }),
++      marker: join(CACHE_ROOT, `prepare-dsh-${targetName}.json`),
++      // Nothing is digested here: the descriptor, the payload smoke and verifyDesktopRuntime all run
++      // after this returns, so a hit is only accepted when the whole tree re-inventories cleanly.
++      verify: () => verifyDesktopRuntime(DSH_OUTPUT_ROOT, release.version, target),
++      produce: async () => {
++        rmSync(DSH_OUTPUT_ROOT, { recursive: true, force: true })
++        rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
++        copyFileSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGE_SET_FILE), join(BUILD_ROOT, DESKTOP_PACKAGE_SET_FILE))
++        cpSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGES_DIR), join(BUILD_ROOT, DESKTOP_PACKAGES_DIR), { recursive: true })
++        createRuntimeProjectMetadata(BUILD_ROOT, release)
++        await runPnpm(['install', '--lockfile-only'])
++        verifyDesktopCoreLockfile(
++          readFileSync(join(BUILD_ROOT, 'pnpm-lock.yaml'), 'utf8'),
++          readDesktopCorePackageSet(BUILD_ROOT, release.version),
++        )
++        await runPnpm(['install', '--prod', '--frozen-lockfile', '--trust-lockfile'])
++        const modules = join(BUILD_ROOT, 'node_modules')
++        mkdirSync(DSH_OUTPUT_ROOT, { recursive: true })
++        cpSync(modules, join(DSH_OUTPUT_ROOT, 'node_modules'), {
++          recursive: true, dereference: true,
++          filter: source => desktopRuntimeFileExclusion(relative(modules, source), target) === undefined,
++        })
++      },
+     })
++    const packageSet = readDesktopCorePackageSet(PACKAGE_SET_ROOT, release.version)
+     writeFileSync(join(DSH_OUTPUT_ROOT, 'package.json'), `${JSON.stringify({
+       name: '@deepseek-ai/dsh-desktop-runtime', private: true, version: release.version, type: 'module',
+       dependencies: Object.fromEntries(packageSet.packages.map(entry => [entry.name, entry.version])),
