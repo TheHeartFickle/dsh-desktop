@@ -36,7 +36,7 @@
 | R10 | `prepare:dsh` 报 `ERR_PNPM_META_FETCH_FAIL … registry.npmjs.org … timeout` | `apps/desktop/scripts/prepare-dsh.ts` 的 `runPnpm()` **硬编码** `registry.npmjs.org`，并过滤掉 `npm_*`/`pnpm_*`/`corepack_*`/`DSH_DESKTOP_*` 环境变量、把 `XDG_CONFIG_HOME` 指向临时目录——本机任何镜像配置都进不去。**对策**：patch 层把 registry 改为读 `DSH_LOCAL_NPM_REGISTRY`（不设时仍是官方地址，行为不变） |
 | R11 | 构建报 `spawn EPERM`（esbuild helper），继而 `spawnSync git` 也 EPERM | 受限沙箱禁止命名管道与管道式子进程。**对策**：tsx shim 只能绕过 esbuild 一个点，**受限沙箱下无法完成构建**，必须在可 spawn 子进程的环境运行 |
 | R12 | 每次构建 10 分钟以上，失败后重跑仍从头开始 | 源仓库构建体系没有阶段级跳过：`scripts/build.ts` 无条件顺序跑 `build:native-system` / `build:lib` / `build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量。**已实现缓存与并行打包，见 [design.zh.md](design.zh.md) 第 5.1 节** |
-| R13 | 构建报 `tar (child): Cannot connect to D: resolve failed` | 在 **Git Bash** 里跑构建时，PATH 里的 MSYS `tar` 把 Windows 路径 `D:\...` 当成 `host:path`。**对策**：用 PowerShell / CMD 运行构建（`npm run build`），不要在 Git Bash 里跑 |
+| R13 | 构建报 `tar (child): Cannot connect to D: resolve failed` | 在 **Git Bash** 里跑构建时，PATH 里的 MSYS `tar` 把 Windows 路径 `D:\...` 当成 `host:path`。**对策**（按可用环境二选一）：① 用 PowerShell / CMD 跑；② 只能用 Git Bash 时，把 Windows 版 tar 前置到 PATH —— `mkdir -p .cache/pathshim && ln -sf /c/Windows/System32/tar.exe .cache/pathshim/tar.exe`，然后 `PATH="$(pwd)/.cache/pathshim:$PATH" node scripts/build.mjs`（`.cache/` 已被忽略，实测可用）。**注意**：本仓库 agent 环境的 pwsh 工具受沙箱限制，node 在里面无法 spawn 子进程（`spawnSync git EPERM`，即 R11），所以本机实际走的是 ② |
 | R14 | 同一成员 `pnpm pack` 两次，tarball 的 sha256 不同 | 上游打包**不是字节可复现**的：差异只在打包后 manifest 的键顺序（tar/gzip 头与文件清单一致）。缓存判据由此确定 —— 见 [decisions.zh.md](decisions.zh.md) 第 16 条 |
 | R15 | 缓存明明该命中却每轮报 `miss (no-marker)` | marker 一度放在**源仓库根**的 `.desktop-build/local-cache/`，而 `.gitignore` 只忽略 `apps/desktop/.desktop-build/` —— 根目录那份被第 3 步 `git clean -fd` 每轮删掉。**对策**：marker 一律落在 `apps/desktop/.desktop-build/targets/<target>/local-cache/`（被忽略，构建流程的各阶段都不会清它；上游 `pnpm clean` 会清整个 `.desktop-build/`，属预期的冷缓存重置） |
 | R16 | 想确认某次构建到底重做了什么 / 想强制全量重做 | 每个缓存决策都往构建日志（`.cache/build/build.log`）打一行 `build-cache: <stage> hit\|miss (<原因>)`。marker 有两处：`apps/desktop/.desktop-build/targets/<target>/local-cache/*.json`（`build-official`、`prepare-dsh-<target>`、`package-dir-<target>`）与 `.../packed/.pack-cache/<family>/*`（tarball 成员；私有 Host 与 native entry 另有 `<name>/packed/` 与 `tarball.json`）。删掉这两处即回到冷缓存；改 `src/build.config.json` 的 `checkout` 会自动让全部缓存失效 |
@@ -74,7 +74,8 @@ node scripts/build.mjs           # 读配置 → 校验提交 → 清理并 chec
 | 构建 | `build[{cwd,command}]` | 在源仓库执行，命令与参数不在脚本里硬编码 |
 
 构建期间必须注意：输出重定向到文件（R5）、设置 `DSH_DESKTOP_APP_ID` 与 `npm_execpath`（R8）、
-镜像通过 `DSH_LOCAL_NPM_REGISTRY` 传入（R10）、在可 spawn 子进程的环境运行（R11）。
+镜像通过 `DSH_LOCAL_NPM_REGISTRY` 传入（R10）、在可 spawn 子进程的环境运行（R11）、
+用 Git Bash 跑时先把 Windows 版 tar 前置到 PATH（R13）。
 
 ### 3.3 开发态启动（验证隔离时用）
 
