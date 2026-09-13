@@ -27,6 +27,7 @@ src/adaptator/              适配层：把官方内部接口固定成稳定接�
 src/features/               功能层：功能实现（独立文件；renderer/ 为渲染进程部分）
 src/patch/                  patch 层：每个目标源文件一个 patch
 scripts/build.mjs           构建入口
+scripts/smoke-packaged.mjs  打包产物启动冒烟（隔离 DSH_HOME + 诊断文件判据）
 assets/                     静态资源
 archive/desktop-legacy/     已归档的早期自研壳
 docs/                       设计与决策文档

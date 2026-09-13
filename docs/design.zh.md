@@ -36,17 +36,27 @@ desktop/                          ← 本仓库
     adaptator/                    ← 适配层（独立文件）
       renderer/                   ←   渲染进程部分：经典脚本（第 5.2 节）
     features/                     ← 功能层（独立文件）
+      build-cache.{mjs,d.mts}     ←   构建缓存（第 5.1 节；注入到构建脚本）
+      profile-recovery.{mjs,d.mts}←   复制 web 配置 / 快照回退 / 回退提示（第 5.2 节）
+      diagnostics.{mjs,d.mts}     ←   启动失败的阶段化诊断（第 5.2 节）
       renderer/                   ←   渲染进程部分：经典脚本 + 同源 CSS
     patch/                        ← patch 层：每个目标源文件一个 patch
       build.ts.patch
+      electron-builder.config.mjs.patch
+      locale.ts.patch
+      main.ts.patch
+      main-startup.spec.ts.patch
       pack.ts.patch
       package-target.ts.patch
       prepare-dsh.ts.patch
+      project-manager.ts.patch
       runtime-payload-smoke.mjs.patch
       startup.html.patch
       startup.js.patch
+      tsdown.config.ts.patch
   scripts/
     build.mjs                     ← 构建入口：读配置 → 校验 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
+    smoke-packaged.mjs            ← 打包产物启动冒烟（隔离 DSH_HOME + 诊断文件判据，第 6 节/R22）
     make-icons.py                 ← 资产生成（与构建流程无关）
   assets/                         ← 静态资源（加载动画图片由 copy 映射进源仓库）
   archive/desktop-legacy/         ← 已归档的早期自研壳
@@ -92,8 +102,9 @@ desktop/                          ← 本仓库
 | 2 | 打包 Windows 产物 | ✅ |
 | 3 | 自研壳归档 | ✅ |
 | 4 | 加载动画：三层实现 + dev 模式视觉验证 | ✅ |
-| 4 | 复制 web 配置确认 / 配置快照回退 / 回退提示 | 待实施 |
-| 5 | 诊断规则模块（按阶段分组、规则互不可见） | 待实施 |
+| 4 | 复制 web 配置 / 配置快照回退 / 回退提示 | ✅ |
+| 5 | 诊断规则模块（按阶段分组、规则互不可见） | ✅ |
+| — | 打包产物启动冒烟（诊断文件记录启动阶段） | ✅ |
 
 阶段 4/5 须走三层架构，**不可做成 dsh 插件**（原因见 [decisions.zh.md](decisions.zh.md) 第 6 条）；
 各项怎么验证见 [reproduce.zh.md](reproduce.zh.md) 第 6 节。
@@ -135,10 +146,32 @@ desktop/                          ← 本仓库
 | 能力 | 设计要点 |
 |---|---|
 | 加载动画 | 沿用自研壳的鲸鱼动画（`assets/icon.png` → `renderer/loading-art.png`），等待后端时展示，官方 `render()` 判定失败时收起。**已按三层落地**：适配层 `adaptator/renderer/startup-page.js` 固定「插到官方页面哪个位置」，功能层 `features/renderer/loading-art.{js,css}` 负责画面与可见性，patch 只插 `<link>`、两个 `<script>` 和 `render()` 里一行 `dshLoadingArt.sync(failed)`。受 CSP 约束（`script-src 'self'; style-src 'self'; img-src 'self' data:`）：样式是同源 CSS 文件、图片是同源 PNG，无内联脚本/样式；渲染进程没有模块上下文（官方 `startup.js` 是经典脚本），所以两层以经典脚本 + 全局对象组装（决策 21） |
-| 复制 web 配置 | 触发条件：`profiles/desktop` 不存在且 `profiles/web` 含第三方插件。复制的是**配置语义而非目录**：`dependencies`、`dsh.profile.bundles` 里的第三方条目、`overrides`，以及 `pnpm-workspace.yaml` 的 `allowBuilds`（缺它，带 lifecycle script 的插件装不上）。web profile 里的 `.dsh-market`、`update.ps1` 之类本地产物不搬。**校验时机**：先复制 + 安装，再在 desktop runtime 的解析语境里校验，失败即回退 |
-| 配置快照/回退 | 备份 profile 里**用户可变**的文件：`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml`（可缺失）。**不备份** `desktop.cordis.yml`——它是 `desktop-host` 每次启动都重写的常量根配置；`node_modules` 由 lockfile 重建，同样不备份。时机：启动前快照 → 状态 `ready` 后提交为 last-good → 失败则回退并重试**一次** → 二次失败交官方恢复页（避免死循环）。回退必须是三步：还原文件 → 重建依赖 → **刷新宿主包链接**（第一方包是链进 profile 的，只还原文件不足以恢复可启动态） |
-| 回退提示 | 主进程在 `navigateMain(applicationUrl)` 成功后用 `executeJavaScript` 注入自绘 toast；不依赖 dsh 前端 DOM，也不改 `desktop-host` |
-| 诊断规则 | 按阶段分组、规则互不可见，沿用「首因原则」。原设计的环境层（Node/npm）与依赖层（dsh 安装）在官方架构下**直接消失**（运行时内置、版本固定），换来的新失败面决定阶段划分：① 壳与 Host 启动（内置 Node 归档、Host 进程与管道握手）② profile 与插件图（装包、`allowBuilds`、`validateDesktopPluginGraph`）③ 包管理缓存（pnpm store 可用性与跨盘、lockfile 冲突）④ 配置层（`cordis.patch.yml` 行 id 失效、快照回退）⑤ 内置 dsh 与插件版本不匹配 |
+| 复制 web 配置（已实施） | 触发条件：`profiles/desktop` 不存在且 `profiles/web` 含第三方插件。复制的是**配置语义而非目录**：`dependencies`、`dsh.profile.bundles` 里的第三方条目、`overrides`，以及 `pnpm-workspace.yaml` 的 `allowBuilds`（缺它，带 lifecycle script 的插件装不上）。web profile 里的 `.dsh-market`、`update.ps1` 之类本地产物不搬。**校验时机**：先复制 + 安装，再在 desktop runtime 的解析语境里校验，失败即回退 |
+| 配置快照/回退（已实施） | 备份 profile 里**用户可变**的文件：`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml`（可缺失）。**不备份** `desktop.cordis.yml`——它是 `desktop-host` 每次启动都重写的常量根配置；`node_modules` 由 lockfile 重建，同样不备份。时机：启动前快照 → 状态 `ready` 后提交为 last-good → 失败则回退并重试**一次** → 二次失败交官方恢复页（避免死循环）。回退必须是三步：还原文件 → 重建依赖 → **刷新宿主包链接**（第一方包是链进 profile 的，只还原文件不足以恢复可启动态） |
+| 回退提示（已实施） | 主进程在 `navigateMain(applicationUrl)` 成功后用 `executeJavaScript` 注入自绘 toast；不依赖 dsh 前端 DOM，也不改 `desktop-host` |
+| 诊断规则（已实施） | 按阶段分组、规则互不可见，沿用「首因原则」。原设计的环境层（Node/npm）与依赖层（dsh 安装）在官方架构下**直接消失**（运行时内置、版本固定），换来的新失败面决定阶段划分：① 壳与 Host 启动（内置 Node 归档、Host 进程与管道握手）② profile 与插件图（装包、`allowBuilds`、`validateDesktopPluginGraph`）③ 包管理缓存（pnpm store 可用性与跨盘、lockfile 冲突）④ 配置层（`cordis.patch.yml` 行 id 失效、快照回退）⑤ 内置 dsh 与插件版本不匹配 |
+
+**实现形态**：功能层 `src/features/profile-recovery.mjs`（复制 / 快照 / 回退 / 提示）与
+`src/features/diagnostics.mjs`（诊断规则）承载全部判断；patch 只把调用插进官方 `apps/desktop/src/main.ts`
+与宿主能力（官方 `DesktopProjectManager` 新增一个「无条件重建 profile」入口）。接线点：
+
+| 时机 | 调用 |
+|---|---|
+| `reconcileBackend()` 之前 | `webProfileCopyPlan` →（有变化才）快照 → 写入 → 重装并刷新宿主链接 → desktop runtime 里探针 `import()` |
+| 探针失败 | 立刻回退到本次启动前的快照并重装，第一次失败交官方恢复页（不重试） |
+| Host 启动失败（复制成功后） | 回退一次 → 重装 → 重试启动一次；第二次再失败交官方恢复页 |
+| `showStartupError()` | `diagnoseStartupFailure` 命中的阶段标题 + 下一步 + 原始错误串 |
+| 回退后成功进入应用页 | `executeJavaScript` 注入一次自绘 toast |
+
+**复制的是配置语义而非目录**（决策 23）：`package.json` 的 `dependencies`/`overrides`/第三方
+`dsh.profile.bundles` 条目，以及 `pnpm-workspace.yaml` 的 `allowBuilds` 段（按行合并，不整文件照搬）。
+`.dsh-market`、`update.ps1`、`cordis.yml`、`node_modules` 等 web 专用本地产物不搬。
+
+**两条边界**（写在这里，免得被读成「所有情况都管」）：
+1. web profile 的 `cordis.patch.yml` 不复制：它是该 profile 自己的 patch 层，且可能引用 web 目录里的相对文件
+   （例如 `rewind-common.gitignore`），搬过去会指向不存在的路径。
+2. 快照只覆盖 `package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml` 四个用户可变文件；
+   `desktop.cordis.yml` 每个启动都被官方重写、`node_modules` 由 lockfile 重建，都不进快照。
 
 #### 插件兼容性校验的能力边界（对应上表「复制 web 配置」的校验时机）
 

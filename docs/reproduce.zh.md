@@ -18,6 +18,7 @@
 | Electron | 44.0.0（`apps/desktop/node_modules/electron`，随上游 lockfile 变化） |
 | 镜像 | `~/.npmrc` 里配置了 `registry=https://registry.npmmirror.com`（注意上游构建会屏蔽它，见 R10） |
 | 打包需要 | `DSH_DESKTOP_APP_ID`（反向域名）；`--unsigned` 模式下不需要签名证书 |
+| 冒烟取证 | `DSH_DESKTOP_DIAGNOSTIC_FILE`：设置后主进程把启动阶段（`phase=starting / ready / error`、`phase=application-page`）追加进该文件；未设置时完全不写（见 R21/R22） |
 
 > 源仓库的依赖（`node_modules`）与构建产物都**不随本仓库同步**：新机器 clone 后需先安装依赖，再按第 3 节构建。
 
@@ -57,6 +58,10 @@
 |---|---|---|
 | R19 | 加载动画的 PNG 能从 shell 资源里显示吗？ | `apps/desktop/src/main.ts` 的 MIME 表只有 `.css/.html/.js/.svg`，`loading-art.png` 实际按 `application/octet-stream` 返回；但资源没有 `X-Content-Type-Options: nosniff`，Chromium 对 `<img>` 走内容嗅探 → 实测解码正常（`naturalWidth/Height` = 512×512）。**上游将来若给 shell 资源加 nosniff，这里会破** |
 | R20 | 想验证加载动画真的显示、样式没被 CSP 挡住 | dev 模式（3.3）自带主进程 inspector，从它看最省事：`fetch('http://127.0.0.1:9229/json/list')` 取 `webSocketDebuggerUrl` 连上，`Runtime.evaluate` 里用 `process.mainModule.require('electron')` 拿 `BrowserWindow`，再 `webContents.executeJavaScript()` 读 `#loading-art` 的 `naturalWidth`、`getComputedStyle().animationName`、隔 0.7s 再读 `transform`（两次不同即在动），`capturePage().toPNG()` 存图。**启动页地址是 `dsh-app://shell/startup.html`**（scheme 由 `main.ts` 的 `SCHEME` 决定，`shell://` 是错的）；别用 `webContents.loadURL` 抢导航 —— 应用自身在推进导航时会把它中断（`ERR_FAILED (-2)`），要看就自己 `new BrowserWindow()`（此时没有 preload，`startup.js` 报 `Cannot read properties of undefined (reading 'locale')`，属预期） |
+| R21 | 打包产物（GUI 子系统进程）不产出任何 stdout | win-unpacked 的 exe 没有控制台：`ELECTRON_ENABLE_LOGGING=1` 也不进重定向文件（实测两趟都是 2 字节空日志）。**对策**：改用 `DSH_DESKTOP_DIAGNOSTIC_FILE` 让主进程把启动阶段写进文件；`scripts/smoke-packaged.mjs` 就是按这个判据判通过的 |
+| R22 | 打包产物的启动冒烟怎么判「真的到了应用页」 | 判据两条：① 诊断文件出现 `phase=application-page`（主进程推进到应用页的直接事实；Host 起不来时页面停在 `dsh-app://shell/startup.html`，不会有这一行）② profile 自包含（`package.json`、`pnpm-workspace.yaml`、`node_modules`、`desktop-runtime-state.json` 都在）。**实测**：冷启动（空 home）~6.4s 到 ready、~7s 到应用页；复用同一 home 的温启动 ~2.5s。命令：`node scripts/smoke-packaged.mjs [超时秒数]`，日志落 `.cache/runs/packaged-smoke.log`、诊断落 `$DSH_HOME/diagnostic.log` |
+| R23 | 打包产物报「找不到模块」才算到应用页 | `tsdown` 会把 `../local/features/*.mjs` 重写成 `lib/local/features/*.mjs`，所以 ① `tsdown.config.ts` 要把两个功能层文件列进 `deps.neverBundle` ② `electron-builder.config.mjs` 的 `files` 要加 `local/features/*.mjs`。少任何一条，打包产物会因为解析不到功能层而直接落到启动页 |
+| R24 | 阶段 4 的复制/回退怎么在无 web profile 的机器上验证 | web profile 不存在时功能层直接跳过（返回 null），所以 `$DSH_HOME/profiles/web` 缺失的机器上行为等价于「没定制」。要验证复制路径得自造 web profile 夹具（`package.json` + `pnpm-workspace.yaml`），`src/features/profile-recovery.test.mjs` 覆盖了配置语义与重试边界，接线层由官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例覆盖 |
 
 ## 3. 复刻命令
 
@@ -165,5 +170,8 @@ pnpm install --frozen-lockfile
 | 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM 按接线顺序跑两个经典脚本，断言插入位置、可见性切换、「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
 | patch 层 | `git apply --check` + 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了启动页再跑官方 `apps/desktop/tests/startup-renderer.spec.ts`（`node_modules/.bin/vitest run <路径>`，实测 8/8 通过） |
 | 加载动画（视觉） | dev 模式 + R20 的 inspector 读法：`naturalWidth` 证明图片解码、`animationName`/两次 `transform` 证明 CSS 动画在跑、`styleElements`/`style` 属性为 0 证明没碰内联样式 |
+| 阶段 4（复制 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（16 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退三步、探针失败与重试边界）+ 官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例（接线顺序、放弃复制、回退一次后停手、诊断上页） |
+| 阶段 5（诊断规则） | `src/features/diagnostics.test.mjs`（7 例：每条规则命中上游真实错误串、阶段不串、覆盖表一致、未命中返回 null、AggregateError 展开、不可恢复提示、格式化保留原始串） |
+| 打包产物（冒烟） | `node scripts/smoke-packaged.mjs`：见 R22/R23，冷启动与温启动各实测通过 |
 | 整体闭环 | 按配置执行完整流程后，产物可正常启动；源仓库仍能 `checkout` 到配置指定的提交 |
 | 构建时间优化 | 连续两次构建，第二次显著更快；只改页面/资源类文件时不触发全量编译（见 design 第 5.1 节） |
