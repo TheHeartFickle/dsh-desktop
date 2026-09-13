@@ -1,0 +1,20 @@
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index e2e4d9e6c3..058097b3bf 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -34,6 +34,7 @@ export const en = {
+   retry: 'Retry startup',
+   disableAll: 'Disable all plugins and retry',
+   recoveryDescription: 'The backend could not start. Update or disable incompatible plugins, then retry. Installed plugins and configuration are retained.',
++  webProfileRolledBack: 'The previous start failed. Desktop restored the configuration from before this start (including the plugins copied from your web profile).',
+   changingActivation: 'Changing plugin activation…',
+   npmPackage: 'npm package',
+   install: 'Install',
+@@ -88,6 +89,7 @@ export const zh = {
+   retry: '重试启动',
+   disableAll: '禁用全部插件并重试',
+   recoveryDescription: '后端无法启动。请更新或禁用不兼容插件，然后重试。已安装插件和配置会保留。',
++  webProfileRolledBack: '上次启动失败，已回滚到本次启动之前的配置（含从 web profile 复制来的插件）。',
+   changingActivation: '正在更改插件启用状态…',
+   npmPackage: 'npm 包',
+   install: '安装',

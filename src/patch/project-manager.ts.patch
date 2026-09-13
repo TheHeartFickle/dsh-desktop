@@ -1,0 +1,27 @@
+diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
+index a91c6af6b2..cebf45ce06 100644
+--- a/apps/desktop/src/project-manager.ts
++++ b/apps/desktop/src/project-manager.ts
+@@ -279,6 +279,22 @@ export class DesktopProjectManager {
+     }
+   }
+ 
++  /**
++   * Reconcile the profile with the current runtime unconditionally: rebuild dependencies and refresh
++   * the reserved host package links. Restoring files from a snapshot leaves package state stale in
++   * ways `applyRelease` cannot observe, so the caller uses this instead of that fast path.
++   * @param projectDir - Profile whose configuration files were just restored.
++   */
++  async ensureProfilePackages(projectDir: string): Promise<void> {
++    await this.withLock(async () => {
++      this.descriptor = this.readRuntime()
++      if (!existsSync(join(projectDir, 'package.json')) || !existsSync(join(projectDir, 'pnpm-workspace.yaml'))) {
++        throw new Error('desktop project: restored profile is missing its configuration files')
++      }
++      await this.reconcileProfile(projectDir, readDesktopProfileState(projectDir), true)
++    })
++  }
++
+   /** @returns Whether application resources support profile recovery. */
+   canRecoverProfile(): boolean {
+     return this.descriptor !== undefined && existsSync(this.runtime.node) && existsSync(this.runtime.dsh)

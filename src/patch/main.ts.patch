@@ -1,0 +1,173 @@
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index a73a6223a5..cbb43075eb 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1,7 +1,8 @@
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+ 
++import { appendFileSync } from 'node:fs'
+ import { readFile, writeFile } from 'node:fs/promises'
+-import { extname, join, normalize, resolve, sep } from 'node:path'
++import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import {
+   app,
+@@ -22,6 +23,11 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+ import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+ import { desktopErrorState } from './startup-error.ts'
+ import { startupFailureDocument } from './startup-document.ts'
++import {
++  applyWebProfileCopy, installProbeFailures, rollbackProfile, snapshotProfile, startupNoticeScript,
++  webProfileCopyChanged, webProfileCopyPlan,
++} from '../local/features/profile-recovery.mjs'
++import { diagnoseStartupFailure, formatDiagnosis } from '../local/features/diagnostics.mjs'
+ 
+ const SCHEME = 'dsh-app'
+ let focusPrimaryWindow = (): void => {}
+@@ -153,6 +159,40 @@ async function main(): Promise<void> {
+   const development = app.isPackaged ? undefined : join(app.getAppPath(), '.desktop-build', 'development', 'project')
+   const activeProject = development ?? paths.profile
+   const manager = new DesktopProjectManager(paths, resources)
++  // Local customization (feature layer: apps/desktop/local/features/profile-recovery.mjs). Package
++  // state always changes through the manager; the feature layer owns which files are copied,
++  // snapshotted, and restored, while every rebuild or host-link refresh goes through the manager.
++  const webProfile = join(dirname(paths.profile), 'web')
++  let webProfileBaseline: ReturnType<typeof snapshotProfile> | undefined
++  let copiedProfile = false
++  // Set only for the in-process retry: a copy that succeeds is kept, so the retry neither copies
++  // nor reinstalls again, and a failure after that point is a Host failure like any other.
++  let retryingCopiedProfile = false
++  let rollbackHandled = false
++  /**
++   * Copy the web profile's configuration into the desktop profile. Files that already match are
++   * left alone, so an unchanged web profile neither rewrites nor reinstalls anything. The probe
++   * runs in the desktop runtime after installation: a plugin that cannot load abandons the copied
++   * configuration here instead of surfacing as a Host startup failure.
++   */
++  const copyWebProfile = async (): Promise<void> => {
++    const plan = webProfileCopyPlan({ desktopProfile: paths.profile, webProfile })
++    if (plan === null || !webProfileCopyChanged({ desktopProfile: paths.profile, plan })) return
++    const baseline = snapshotProfile({ profile: paths.profile })
++    applyWebProfileCopy(paths.profile, plan)
++    webProfileBaseline = baseline
++    copiedProfile = true
++    await manager.ensureProfilePackages(paths.profile)
++    const failures = installProbeFailures({ profile: paths.profile, plugins: plan.plugins, node: resources.node })
++    if (failures.length === 0) return
++    copiedProfile = false
++    await rollbackProfile({
++      profile: paths.profile,
++      snapshot: baseline,
++      onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
++    })
++    throw new Error(`dsh desktop: copied web profile plugins could not be loaded:\n${failures.join('\n')}`)
++  }
+   profileRecoveryAvailable = () => development === undefined && manager.canRecoverProfile()
+   let pageError: Extract<DesktopBackendState, { phase: 'error' }> | undefined
+   let quitting = false
+@@ -195,7 +235,20 @@ async function main(): Promise<void> {
+     const state = pageError ?? backend.state
+     return state.phase === 'error' ? { ...state, profileRecovery: profileRecoveryAvailable() } : state
+   }
++  /**
++   * Record one startup phase when the shell was asked for a diagnostic file. The packaged
++   * application has no console, so this is how a smoke test observes which phase it reached.
++   */
++  const recordPhase = (phase: string): void => {
++    const file = process.env.DSH_DESKTOP_DIAGNOSTIC_FILE
++    if (file === undefined || file === '') return
++    try { appendFileSync(file, `${new Date().toISOString()} phase=${phase}\n`) } catch (error) {
++      console.error('dsh desktop: diagnostic file is not writable', error)
++    }
++  }
++
+   const publishBackend = (state: DesktopBackendState): void => {
++    recordPhase(state.phase)
+     for (const window of BrowserWindow.getAllWindows()) {
+       window.webContents.send(DESKTOP_IPC.backendState, state)
+     }
+@@ -213,9 +266,47 @@ async function main(): Promise<void> {
+   }, (state) => {
+     if (state.phase === 'starting' && !emergencyDocument) pageError = undefined
+     publishBackend(backendState())
+-    if (state.phase === 'error') void navigateMain(startupUrl).catch((error: unknown) => { console.error(error) })
++    if (state.phase === 'error' && !rollbackHandled) {
++      // The controller reports a failure after its own cleanup settles, which can be later than
++      // the startup promise rejecting. Both paths call this guarded retry; only the first acts.
++      void retryAfterRollback()
++    }
+   })
+ 
++  /**
++   * Restore the pre-copy profile after a failed start, rebuild it, and let the caller start once
++   * more. The retry is bounded to one attempt: a restored last-good profile that still fails
++   * cannot be fixed by another rollback, so recovery belongs to the startup page.
++   */
++  const rollbackCopiedProfile = async (): Promise<boolean> => {
++    if (!copiedProfile || rollbackHandled || webProfileBaseline === undefined) return false
++    rollbackHandled = true
++    retryingCopiedProfile = true
++    await rollbackProfile({
++      profile: activeProject,
++      snapshot: webProfileBaseline,
++      onRepair: async () => { await manager.ensureProfilePackages(activeProject) },
++    })
++    return true
++  }
++
++  let retry: Promise<void> | undefined
++  const retryAfterRollback = (): Promise<void> => {
++    retry ??= Promise.resolve()
++      .then(async () => await rollbackCopiedProfile())
++      .then(async (restored) => {
++        if (!restored) return
++        console.error('dsh desktop: rolled the profile back to the pre-copy configuration; retrying once')
++        await backend.stop()
++        await reconcileBackend()
++      })
++      .catch((error: unknown) => {
++        console.error('dsh desktop: retry after profile rollback failed', error)
++      })
++      .finally(() => { retry = undefined })
++    return retry
++  }
++
+   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
+     updateState = state
+     for (const window of BrowserWindow.getAllWindows()) {
+@@ -248,7 +339,9 @@ async function main(): Promise<void> {
+ 
+   const showStartupError = async (error: unknown): Promise<void> => {
+     if (quitting) return
+-    pageError = desktopErrorState(error)
++    // Feature layer: diagnostics.mjs maps the first matching failure stage onto the startup page.
++    const diagnosis = diagnoseStartupFailure(error, { profileRecovery: profileRecoveryAvailable() })
++    pageError = diagnosis === null ? desktopErrorState(error) : { phase: 'error', message: formatDiagnosis(diagnosis) }
+     try { await navigateMain(startupUrl) }
+     catch (navigationError) {
+       await showEmergencyError(new AggregateError([error, navigationError], messages.startupFailed))
+@@ -259,12 +352,23 @@ async function main(): Promise<void> {
+     startup ??= (async () => {
+       pageError = undefined
+       await navigateMain(startupUrl)
++      if (!copiedProfile && !rollbackHandled && !retryingCopiedProfile) await copyWebProfile()
++      retryingCopiedProfile = false
+       await backend.start(async () => {
+         if (development === undefined) {
+           await manager.applyRelease()
+         }
+       })
+-      if (backend.host !== undefined) await navigateMain(applicationUrl)
++      if (backend.host !== undefined) {
++        await navigateMain(applicationUrl)
++        recordPhase('application-page')
++        const window = mainWindow
++        if (rollbackHandled && window !== undefined && !window.isDestroyed()) {
++          await window.webContents.executeJavaScript(
++            startupNoticeScript({ signal: 'rolled-back', text: messages.webProfileRolledBack }),
++          ).catch(() => undefined)
++        }
++      }
+     })().catch(async (error: unknown) => {
+       await showStartupError(error)
+       throw error

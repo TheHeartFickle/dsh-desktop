@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/electron-builder.config.mjs b/apps/desktop/electron-builder.config.mjs
+index 4dfb363693..b8e4673e70 100644
+--- a/apps/desktop/electron-builder.config.mjs
++++ b/apps/desktop/electron-builder.config.mjs
+@@ -61,6 +61,7 @@ export function createElectronBuilderConfig(
+     files: [
+       'lib/*.js',
+       'lib/*.cjs',
++      'local/features/*.mjs',
+       'renderer/**/*',
+       'package.json',
+     ],
