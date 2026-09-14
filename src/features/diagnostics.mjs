@@ -41,7 +41,7 @@ const STAGE = Object.freeze({
  * 规则表，按阶段分组。
  *
  * 每条 `matches(error, context)` 只判断自己的失败面。**组间顺序也是判据**：越具体的失败面越靠前
- * （版本一致性 → 配置 → 插件图 → 包缓存）：越窄的模式越靠前，避免被「requires …」这类宽模式截胡，宽模式不会把具体失败截胡；组内先命中先返回（首因原则）。
+ * （版本一致性 → 壳与 Host 启动 → 配置 → 插件图 → 包缓存）：越窄的模式越靠前，避免被「requires …」这类宽模式截胡，宽模式不会把具体失败截胡；组内先命中先返回（首因原则）。
  * 正则全部来自上游源码里的真实错误串（`apps/desktop/src/*.ts`、`apps/desktop-host/src/index.ts`）。
  */
 const RULES = Object.freeze({
