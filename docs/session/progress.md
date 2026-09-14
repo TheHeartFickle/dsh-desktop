@@ -8,7 +8,7 @@
 ### 做了什么
 
 1. `ls` / `cat README.md` / `cat package.json` → 建立项目轮廓
-2. 通读四份文档：`design.zh.md`、`decisions.zh.md`（25 条）、`reproduce.zh.md`（R1–R24）、`desktop-guide.zh.md`
+2. 通读四份文档：`../design.zh.md`、`../decisions.zh.md`（25 条）、`../reproduce.zh.md`（R1–R24）、`../desktop-guide.zh.md`
 3. `find src scripts assets` → 确认文件清单（13 个 patch、6 个功能层文件、2 个适配层文件）
 4. `git log` / `git status` / `git remote -v` → 仓库干净，HEAD `0af4544`
 5. `node --test "src/**/*.test.mjs"` → **51 pass / 0 fail**
@@ -21,7 +21,7 @@
 | 问题 | 选择 |
 |---|---|
 | 清单目标 | 多选：**①环境复刻 + 全链路验证**、②新增功能（三层落地） |
-| | ⚠️ 其中②当时被我误解为一条可完成的轨道；它其实是 design 第 1 节的**设计规范**，已在 Session 7 从清单删除 |
+| | ⚠️ 其中②当时被我误解为一条可完成的轨道；它其实是 design 的[三层](../design.zh.md#1-三层)**设计规范**，已在 Session 7 从清单删除 |
 | 清单粒度 | **每条带可执行命令 + 验证判据** |
 
 ### 交付
@@ -177,7 +177,7 @@
 ### 文档改动
 
 - `docs/design.zh.md`：5.1 补外部 `tar` 问题与 `tarball.mjs`；5.2 补启动过程可观测性；目录结构补新文件
-- `docs/reproduce.zh.md`：第 4 节新增「外部 `tar` 进程」段；第 6 节验证表重排并补诊断链；
+- reproduce：[构建缓存的实现与实测](../reproduce.zh.md#4-构建缓存的实现与实测)新增「外部 `tar` 进程」段；[验证方式](../reproduce.zh.md#6-验证方式)表重排并补诊断链；
   R23 修正（`neverBundle` 只列两个运行期文件）、新增 R25（启动页文案可观测）与 R26（单实例锁）
 - 未改：design 的判据与缓存契约（与实测无冲突）、decisions 17/22（依据仍成立）、历史性能表
 
@@ -198,26 +198,15 @@
 > ⚠️ 「先按名字筛 PID 再 `taskkill //PID`」—— 筛选条件（`grep -i DeepSeek`）本身就是猜的，仍误杀 agent。
 > **结论：任何形式的批量终止一律不做。**
 
-## 当前状态
-
-| 项 | 状态 |
-|---|---|
-| 轨道 A（环境复刻 + 全链路验证） | 主体完成；**4.3 诊断链脚本已写但未实跑**（受单实例锁阻塞，需先无旧实例） |
-| ~~轨道 B（新增功能）~~ | **作废**：「三层落地」是设计规范不是功能，不该列为轨道 |
-| 未提交改动 | `README.md`、`docs/design.zh.md`、`docs/reproduce.zh.md`、`src/build.config.json`、`src/patch/{pack,main}.ts.patch` + 4 个新文件 |
-
-会话工作文档（`task_plan.md`、`findings.md`、`progress.md`、`todo-list.md`）均未跟踪，去留待定。
-`AGENTS.md` 由另一会话写入，本会话未碰。
-
 ## Session 7 — 修正两处我的实质错误
 
 ### 用户指出的两个问题
 
-1. 「刚才我让你修订文档，这种错误为什么不修？」—— 指 `reproduce.zh.md` 第 6 节声称适配层有「结构断言测试」，
+1. 「刚才我让你修订文档，这种错误为什么不修？」—— 指 reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表声称适配层有「结构断言测试」，
    而 `src/adaptator/` 下**没有任何测试文件**。我上一轮逐节改这份文档时**看过这张表却没核对它的真实性**，
    违反了本仓库 `AGENTS.md` 的第一条（以实际表现为准，并把文档改对）。
 2. 「为什么我好几次让你解释『新增功能（三层落地）』是什么，你每次都顾左右而言它？」—— 因为我自己搞混了：
-   **「三层落地」是 design 第 1 节规定的设计规范（适配层 → 功能层 → patch 层的职责与依赖方向），
+   **「三层落地」是 design 的[三层](../design.zh.md#1-三层)规定的设计规范（适配层 → 功能层 → patch 层的职责与依赖方向），
    不是一件功能、不是可完成的交付物。** 我却把它列为「轨道 B」，编了 18 条可勾选条目，还反复以
    「缺具体功能需求 → 阻塞」作答 —— 拿一条我自己造的不存在的轨道打太极。
 
@@ -225,7 +214,7 @@
 
 | 文件 | 改动 |
 |---|---|
-| `docs/reproduce.zh.md` 第 6 节 | 适配层一行改为实情：现有 `smoke.mjs`（固定上游 payload smoke 的检查项清单与跳过文案格式，由 `smoke-tolerance.mjs` 消费）；**没有独立测试文件**，只被 `smoke-tolerance.test.mjs` 带着覆盖；本层尚无独立守卫，补测方式即结构断言测试 |
+| reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表 | 适配层一行改为实情：现有 `smoke.mjs`（固定上游 payload smoke 的检查项清单与跳过文案格式，由 `smoke-tolerance.mjs` 消费）；**没有独立测试文件**，只被 `smoke-tolerance.test.mjs` 带着覆盖；本层尚无独立守卫，补测方式即结构断言测试 |
 | `todo-list.md` | 删除「轨道 B」18 条清单，替换为「关于三层落地」说明（它是规范、没有完成状态、patch 里不得有判断逻辑）；「前提」表把 P2 标为作废；「执行顺序建议」改为「已完成 34 项 / 仍欠 2 项」 |
 | `task_plan.md` | 标题去掉「/ 新增功能」；目标段加⚠️说明该轨道是错的；阶段表第 15 行与阻塞点 P2 行标为作废 |
 | `progress.md` | Session 1 的清单目标与交付段加注：当时编的「轨道 B」已于本会话删除 |
@@ -243,67 +232,30 @@
 | todo 5.4 规划文件去留 | 未决定 |
 | 适配层独立测试 | 缺（已在文档如实标注，尚未补） |
 
-## Session 8 — 按「patch 层不实现功能」规范整改，并按规范重新修订文档
+## Session 8 — 规范修订（结果：一半作废）
 
 ### 触发
 
 用户指出我对约束的理解偏了：**patch 层不是「只许插一行」，而是「不能在这一层实现功能，只能进行任务调度和导出修改」**。
-随后要求：「继续修改，另外完成修改通过测试后重新修订文档」。
 
-### 代码整改：把诊断行实现从 patch 层移出
+### 保留的成果
 
-越界处是我自己在 Session 6 加进 `main.ts` 的 `recordPhase` —— 它做了时间戳格式化、`detail` 拼接与换行替换、
-写盘与失败容错，属功能实现。
+- `AGENTS.md` 第 2 条、`docs/decisions.zh.md` 第 4 条、`docs/design.zh.md` 第 1 节据此改写，并在 design 新增
+  「patch 层的边界」判定表（可以有：import／接线状态／顺序调度；不能有：判断与文案；按变更内容判定，不按行数）。
+- 文档腐败审查（独立子代理）：修掉 design 目录树漏 `smoke-tolerance.mjs`、reproduce §3.3 残留失效路径、
+  §1 环境事实四项过时（Node 24.13.0 / pnpm 11.22.0 / store 路径 / 源仓库路径）、`278 个 pack 决策` → 277、
+  README 漏 `make-icons.py`。子代理擅自改 `.gitignore` 的部分已还原（后确认 `.gitignore` 是用户自己的改动）。
 
-| 改动 | 内容 |
-|---|---|
-| 新增 `src/features/diagnostics-log.mjs` + `.d.mts` | `formatDiagnosticLine(phase, detail)`：生成 `<ISO 时间> phase=<阶段>[ <细节>]`，`detail` 换行压成空格；`appendDiagnosticLine(file, phase, detail)`：追加写入，失败只告警不抛 |
-| `src/patch/main.ts.patch` | 删掉 `recordPhase` 里的格式化与 try/catch 写盘；改为一行 `appendDiagnosticLine(file, phase, detail)`，只保留「从 `DSH_DESKTOP_DIAGNOSTIC_FILE` 取路径、未设置则不写」的接线 |
-| `src/features/diagnostics-log.test.mjs` | 新增 6 例（行格式 / detail 同页 / 换行压平 / 空串与 undefined 等价 / 追加写盘可逐行解析 / 写盘失败不抛） |
+### 作废的部分（本 Session 后期全部删除）
 
-### 整改中踩到的坑（R23 那条规则，我第二次忘）
+为做「诊断链端到端验证」（todo 4.3）而加的东西全部删掉：功能层 `diagnostics-log.{mjs,d.mts,test.mjs}`、
+`recordPhase` 的 `detail` 参数与 `phase=error-detail`、`scripts/verify-diagnosis.mjs`、
+`tsdown.config.ts.patch` 里对应的 `neverBundle` 项、以及 design/reproduce 里对应的说明（可观测性一节、R25/R26、验证表两行）。
 
-首次构建失败：
-
-```
-[UNRESOLVED_IMPORT] Could not resolve '../local/features/diagnostics-log.mjs' in lib/types/main.js
-```
-
-原因：新增的**运行期**功能层文件没登记进 `tsdown.config.ts` 的 `deps.neverBundle`。已补进
-`tsdown.config.ts.patch`（现为 `profile-recovery.mjs`、`diagnostics.mjs`、`diagnostics-log.mjs` 三个）。
-
-### 验证（均为实跑）
-
-| 项 | 结果 |
-|---|---|
-| 上游 `tsc -b apps/desktop/tsconfig.json` | **EXIT=0**（新 import 解析与类型检查通过） |
-| patch 应用 | **14/14 通过** |
-| 完整构建（输入变更轮） | **EXIT=0，142s** |
-| 稳态构建 | **EXIT=0，51s，280 hit / 0 miss** |
-| 功能层单测 | **57 pass / 0 fail**（原 51 + 新 6） |
-| 打包产物冒烟 | **通过**；诊断文件由新功能层模块写出，格式不变（`phase=starting/ready/application-page`） |
-| 诊断链 `--profile none` | 到达应用页（诊断文件三条记录齐全） |
-
-### 4.3 的剩余阻碍（如实说明）
-
-错误路径三个场景（`manifest` / `state` / `unknown`）**仍未实跑**。原因是我自己造成的死结：
-单实例锁要求「上一场景的窗口已关闭」，而我不再执行任何进程终止，也无法请用户代劳。
-`scripts/verify-diagnosis.mjs` 已修好两个缺陷（等待与断言原先用了两条不一致的正则，导致 `none` 场景假失败；
-场景现自校验、互不干扰），随时可跑，只等窗口清空。
-
-### 文档修订
-
-| 文件 | 改动 |
-|---|---|
-| `docs/decisions.zh.md` 第 4 条 | 由「patch 只做行插入」改为「**patch 层不实现功能，只做任务调度与导出修改**」 |
-| `docs/design.zh.md` 第 1 节 | 三层图与 patch 层职责改写；新增**「patch 层的边界」判定表**（可以有：import／接线状态／顺序串接／按官方状态决定何时调度；不能有：功能判断与文案），并写明「按变更内容判定，不按行数」 |
-| `docs/design.zh.md` 第 2 节 | 补 `diagnostics-log.{mjs,d.mts}` |
-| `docs/design.zh.md` 第 5.2 节 | 补「实现位置」：行格式与写盘在功能层，patch 只留接线；并注明此前直接写在 patch 里属越界 |
-| `docs/reproduce.zh.md` R23 | `neverBundle` 运行期文件由两个改为三个；补充「这个坑踩过两次」及报错原文 |
-| `docs/reproduce.zh.md` 第 6 节 | 新增「功能层（诊断文件）」验证行 |
-| `AGENTS.md` 第 2 条 | 同步为「patch 层不实现功能，只做任务调度与导出修改」 |
-| `README.md` | 「git patch 行插入」→「git patch 接线（只做任务调度，不实现功能）」 |
-| `findings.md` / `task_plan.md` / `todo-list.md` | 同步该定义；单测数 51 → 57 |
+**作废理由**：该行为已被功能层单测（`diagnostics.test.mjs` 7 例，喂上游真实错误串）与官方
+`apps/desktop/tests/main-startup.spec.ts` 的接线用例覆盖；为「真实渲染一眼」付出的代价（改功能层与 patch、
+166 行脚本、`--user-data-dir` 绕单实例锁）与收益不成比例，且过程中我反复搞错被测对象（拿已破坏成 `state`
+的 profile 去断言 `manifest` 的文案）。
 
 ## Session 9 — 会话文档移出仓库根
 

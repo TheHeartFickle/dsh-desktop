@@ -30,7 +30,7 @@
 
 ## 验证
 
-按改动所在层取**最窄**的证据，命令与判据见 [docs/reproduce.zh.md](docs/reproduce.zh.md) 第 6 节（功能层 `node --test "src/**/*.test.mjs"`；patch 层 `git apply --check`；接线与整体走构建 + `scripts/smoke-packaged.mjs`）。
+按改动所在层取**最窄**的证据，命令与判据见 [docs/reproduce.zh.md](docs/reproduce.zh.md) 的[验证方式](docs/reproduce.zh.md#6-验证方式)（功能层 `node --test "src/**/*.test.mjs"`；patch 层 `git apply --check`；接线与整体走构建 + `scripts/smoke-packaged.mjs`）。
 
 - 不可验证时（源仓库缺失、受限沙箱无法 spawn 子进程）在回复里写明**未验证**，不要用「看起来对」代替。
 - 收尾只报实际跑过的命令与结果。

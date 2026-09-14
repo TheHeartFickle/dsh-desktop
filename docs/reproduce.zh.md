@@ -20,7 +20,7 @@
 | 打包需要 | `DSH_DESKTOP_APP_ID`（反向域名）；`--unsigned` 模式下不需要签名证书 |
 | 冒烟取证 | `DSH_DESKTOP_DIAGNOSTIC_FILE`：设置后主进程把启动阶段（`phase=starting / ready / error`、`phase=application-page`）追加进该文件；未设置时完全不写（见 R21/R22） |
 
-> 源仓库的依赖（`node_modules`）与构建产物都**不随本仓库同步**：新机器 clone 后需先安装依赖，再按第 3 节构建。
+> 源仓库的依赖（`node_modules`）与构建产物都**不随本仓库同步**：新机器 clone 后需先安装依赖，再按[复刻命令](#3-复刻命令)构建。
 
 ## 2. 关键踩坑与常用手段
 
@@ -28,7 +28,7 @@
 
 | # | 现象 | 根因与对策 |
 |---|---|---|
-| R1 | `pnpm run dev:desktop` 报 `Error [TransformError]: spawn EPERM (esbuild/lib/main.js:2268)` | 构建脚本全经 `tsx`，tsx 依赖 esbuild 启动 helper 子进程（命名管道）。**对策**：受限环境用 `node --experimental-transform-types <script.ts>` 替代；见第 5 节 tsx shim |
+| R1 | `pnpm run dev:desktop` 报 `Error [TransformError]: spawn EPERM (esbuild/lib/main.js:2268)` | 构建脚本全经 `tsx`，tsx 依赖 esbuild 启动 helper 子进程（命名管道）。**对策**：受限环境用 `node --experimental-transform-types <script.ts>` 替代；见 [tsx shim](#5-tsx-shim仅受限沙箱环境) |
 | R2 | 隔离失效、污染真实 `~/.dsh` | dev 启动器用 `process.env.DSH_HOME ?? 隔离目录`，外层已注入 `DSH_HOME` 时会静默走真实 home。**对策**：启动前显式赋值 |
 | R3 | 桌面端一启动，agent loop 卡死 | 与运行中的 agent 会话共用 `$DSH_HOME`。**对策**：验证时一律用独立 home |
 | R4 | 直接跑 `electron.exe <APP_ROOT>` 显示官方恢复页 | 跳过了 `prepareDevelopmentProject()`——它每次都删除并重建 `.desktop-build/development/project` 并写入运行元数据。**对策**：走完整启动器 |
@@ -39,7 +39,7 @@
 | R9 | `pnpm install` 报 `unable to open database file` | **pnpm 版本与 store 不匹配**：store 的 `index.db` 由某个大版本建立，另一个版本打不开。本机全局 pnpm 是 11.22.0，源仓库却声明 `pnpm@11.7.0`（自管理切换），两者共用同一个 `store-dir` 就冲突。**对策**：让 store 与「实际调用的 pnpm 版本」一致——本机按 11.7.0 重建；旧 store 备份在 `.pnpm-store.bak-1121` |
 | R10 | `prepare:dsh` 报 `ERR_PNPM_META_FETCH_FAIL … registry.npmjs.org … timeout` | `apps/desktop/scripts/prepare-dsh.ts` 的 `runPnpm()` **硬编码** `registry.npmjs.org`，并过滤掉 `npm_*`/`pnpm_*`/`corepack_*`/`DSH_DESKTOP_*` 环境变量、把 `XDG_CONFIG_HOME` 指向临时目录——本机任何镜像配置都进不去。**对策**：patch 层把 registry 改为读 `DSH_LOCAL_NPM_REGISTRY`（不设时仍是官方地址，行为不变） |
 | R11 | 构建报 `spawn EPERM`（esbuild helper），继而 `spawnSync git` 也 EPERM | 受限沙箱禁止命名管道与管道式子进程。**对策**：tsx shim 只能绕过 esbuild 一个点，**受限沙箱下无法完成构建**，必须在可 spawn 子进程的环境运行 |
-| R12 | 每次构建 10 分钟以上，失败后重跑仍从头开始 | 源仓库构建体系没有阶段级跳过：`scripts/build.ts` 无条件顺序跑 `build:native-system` / `build:lib` / `build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量。**已实现缓存与并行打包，见 [design.zh.md](design.zh.md) 第 5.1 节与本文第 4 节** |
+| R12 | 每次构建 10 分钟以上，失败后重跑仍从头开始 | 源仓库构建体系没有阶段级跳过：`scripts/build.ts` 无条件顺序跑 `build:native-system` / `build:lib` / `build:web`；`release:pack` 对全部包逐个 `pnpm pack`；`prepare:*` 重建产物目录；`electron-builder` 全量重打包。只有 `tsc -b` 自带增量。**已实现缓存与并行打包，见 design 的[构建脚本时间优化](design.zh.md#41-构建脚本时间优化已实施)与本文的[构建缓存的实现与实测](#4-构建缓存的实现与实测)** |
 | R13 | 构建报 `tar (child): Cannot connect to D: resolve failed` | 在 **Git Bash** 里跑构建时，PATH 里的 MSYS `tar` 把 Windows 路径 `D:\...` 当成 `host:path`。**对策**（按可用环境二选一）：① 用 PowerShell / CMD 跑；② 只能用 Git Bash 时，把 Windows 版 tar 前置到 PATH —— `mkdir -p .cache/pathshim && ln -sf /c/Windows/System32/tar.exe .cache/pathshim/tar.exe`，然后 `PATH="$(pwd)/.cache/pathshim:$PATH" node scripts/build.mjs`（`.cache/` 已被忽略，实测可用）。**注意**：本仓库 agent 环境的 pwsh 工具受沙箱限制，node 在里面无法 spawn 子进程（`spawnSync git EPERM`，即 R11），所以本机实际走的是 ② |
 
 ### 2.2 构建缓存与产物
@@ -60,10 +60,8 @@
 | R20 | 想验证加载动画真的显示、样式没被 CSP 挡住 | dev 模式（3.3）自带主进程 inspector，从它看最省事：`fetch('http://127.0.0.1:9229/json/list')` 取 `webSocketDebuggerUrl` 连上，`Runtime.evaluate` 里用 `process.mainModule.require('electron')` 拿 `BrowserWindow`，再 `webContents.executeJavaScript()` 读 `#loading-art` 的 `naturalWidth`、`getComputedStyle().animationName`、隔 0.7s 再读 `transform`（两次不同即在动），`capturePage().toPNG()` 存图。**启动页地址是 `dsh-app://shell/startup.html`**（scheme 由 `main.ts` 的 `SCHEME` 决定，`shell://` 是错的）；别用 `webContents.loadURL` 抢导航 —— 应用自身在推进导航时会把它中断（`ERR_FAILED (-2)`），要看就自己 `new BrowserWindow()`（此时没有 preload，`startup.js` 报 `Cannot read properties of undefined (reading 'locale')`，属预期） |
 | R21 | 打包产物（GUI 子系统进程）不产出任何 stdout | win-unpacked 的 exe 没有控制台：`ELECTRON_ENABLE_LOGGING=1` 也不进重定向文件（实测两趟都是 2 字节空日志）。**对策**：改用 `DSH_DESKTOP_DIAGNOSTIC_FILE` 让主进程把启动阶段写进文件；`scripts/smoke-packaged.mjs` 就是按这个判据判通过的 |
 | R22 | 打包产物的启动冒烟怎么判「真的到了应用页」 | 判据两条：① 诊断文件出现 `phase=application-page`（主进程推进到应用页的直接事实；Host 起不来时页面停在 `dsh-app://shell/startup.html`，不会有这一行）② profile 自包含（`package.json`、`pnpm-workspace.yaml`、`node_modules`、`desktop-runtime-state.json` 都在）。**实测**：冷启动（空 home）~6.4s 到 ready、~7s 到应用页；复用同一 home 的温启动 ~2.5s。本机（Node v24.13.0）复跑又测得：冷启动 ~5.4s 到 ready、~5.8s 到应用页，温启动 ~5.2s（与机器负载相关）。命令：`node scripts/smoke-packaged.mjs [超时秒数]`，日志落 `.cache/runs/packaged-smoke.log`、诊断落 `$DSH_HOME/diagnostic.log` |
-| R23 | 打包产物报「找不到模块」才算到应用页 | `tsdown` 会把 `../local/features/*.mjs` 重写成 `lib/local/features/*.mjs`，所以 ① `tsdown.config.ts` 要把**运行期**用到的功能层文件列进 `deps.neverBundle`（当前是 `profile-recovery.mjs`、`diagnostics.mjs`、`diagnostics-log.mjs` 三个）② `electron-builder.config.mjs` 的 `files` 要加 `local/features/*.mjs`。少任何一条，打包产物会因为解析不到功能层而直接落到启动页。**已知状态**：功能层还有两个只被构建脚本 import 的文件（`build-cache.mjs`、`tarball.mjs`），不在 `neverBundle` 里；实测 `tarball.mjs` 会作为独立文件出现在 `app.asar`（`\local\features\tarball.mjs`），`build-cache.mjs` 不出现。二者都不被运行期代码 import，所以只是多带约 3KB，不影响启动。**这个坑踩过两次**：新增**运行期**功能层文件时必须同步登记 `neverBundle`，否则 `build:lib` 报 `[UNRESOLVED_IMPORT] Could not resolve '../local/features/<name>.mjs' in lib/types/main.js`（`tarball.mjs` 只被构建脚本 import，不受影响；`diagnostics-log.mjs` 被 `main.ts` import，漏登记就失败） |
+| R23 | 打包产物报「找不到模块」才算到应用页 | `tsdown` 会把 `../local/features/*.mjs` 重写成 `lib/local/features/*.mjs`，所以 ① `tsdown.config.ts` 要把**运行期**用到的功能层文件列进 `deps.neverBundle`（当前是 `profile-recovery.mjs` 与 `diagnostics.mjs` 两个）② `electron-builder.config.mjs` 的 `files` 要加 `local/features/*.mjs`。少任何一条，打包产物会因为解析不到功能层而直接落到启动页。**已知状态**：功能层还有两个只被构建脚本 import 的文件（`build-cache.mjs`、`tarball.mjs`），不在 `neverBundle` 里；实测 `tarball.mjs` 会作为独立文件出现在 `app.asar`（`\local\features\tarball.mjs`），`build-cache.mjs` 不出现。二者都不被运行期代码 import，所以只是多带约 3KB，不影响启动。新增**运行期**功能层文件时必须同步登记 `neverBundle`，否则 `build:lib` 报 `[UNRESOLVED_IMPORT]` |
 | R24 | 阶段 4 的复制/回退怎么在无 web profile 的机器上验证 | web profile 不存在时功能层直接跳过（返回 null），所以 `$DSH_HOME/profiles/web` 缺失的机器上行为等价于「没定制」。要验证复制路径得自造 web profile 夹具（`package.json` + `pnpm-workspace.yaml`），`src/features/profile-recovery.test.mjs` 覆盖了配置语义与重试边界，接线层由官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例覆盖 |
-| R25 | 想看「启动失败时页面上显示什么」，但打包产物没有控制台 | 上游启动页把文案写进 `<pre id="error">` 的 `textContent`（`startup.js`：`failed ? state.message : ''`），与主进程 `pageError.message` 同源。诊断文件在 `phase=error` 那行**附上这份文案**，所以读文件等价于读页面。**不要走 inspector**：`DSH_DESKTOP_MAIN_INSPECT_PORT` 等调试端口只对**未打包** Electron 生效，打包产物起不了 inspector（实测 9229 未监听） |
-| R26 | 跑诊断验证时，第二次启动应用直接退出 | `apps/desktop/src/single-instance.ts` 用 `requestSingleInstanceLock()`，拿不到锁就 `application.quit()` 并聚焦已有窗口。**锁挂在 Electron 默认 user-data 目录上（应用没设置 `userData`），与 `DSH_HOME` 无关 —— 换 home 绕不过去。** 因此一轮只能观察一个失败场景：先关掉旧实例，再跑 `node scripts/verify-diagnosis.mjs --profile <none\|manifest\|state\|unknown>`。该脚本**不终止任何进程**，观察完需自行关窗口 |
 
 ## 3. 复刻命令
 
@@ -77,7 +75,7 @@ git clone <source-repo-url> deepseek-harness
 cd deepseek-harness && pnpm install --frozen-lockfile
 ```
 
-### 3.2 构建（按 design 第 3 节的配置驱动流程）
+### 3.2 构建（按 design 的[构建流程](design.zh.md#2-构建流程)）
 
 ```bash
 cd <仓库根>
@@ -225,13 +223,11 @@ pnpm install --frozen-lockfile
 | 适配层（进程内） | 现有文件：`smoke.mjs`（把上游 payload smoke 的形态固定下来 —— 检查项清单 `SMOKE_CHECKS` 与跳过文案格式 `formatSmokeSkipLine`，由功能层 `smoke-tolerance.mjs` 消费）。**没有独立测试文件**：本层只被 `smoke-tolerance.test.mjs` 带着覆盖到（该测试在自己的注释里把「功能层 import 适配层」列为隐式契约）。所以本层尚无独立守卫 —— 官方接口变更不会由本层的测试先失败；补测方式即「结构断言测试：喂官方样例、断言解析/包装结果」 |
 | 功能层（进程内） | 纯函数单测（`node --test`，显式路径），不依赖 Electron 与官方代码 |
 | 功能层（tarball 读取） | 拿 `packed/` 里的真实 tarball 逐一双跑「外部 `tar -tzf` / `tar -xOzf`」与进程内 `listTarballEntries` / `readTarballManifest`，断言条目列表与 manifest 完全一致（实测 277/277），再比 `desktop-packages.json` 的 sha256 不变 |
-| 功能层（诊断文件） | `src/features/diagnostics-log.test.mjs`（6 例：行格式、detail 在同一行、换行压平、空串与 undefined 等价、追加写盘可逐行解析、写盘失败不抛） |
 | 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM 按接线顺序跑两个经典脚本，断言插入位置、可见性切换、「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
 | patch 层 | `git apply --check` + 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了启动页再跑官方 `apps/desktop/tests/startup-renderer.spec.ts`（`node_modules/.bin/vitest run <路径>`，实测 8/8 通过） |
 | 加载动画（视觉） | dev 模式 + R20 的 inspector 读法：`naturalWidth` 证明图片解码、`animationName`/两次 `transform` 证明 CSS 动画在跑、`styleElements`/`style` 属性为 0 证明没碰内联样式 |
 | 阶段 4（复制 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（16 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退三步、探针失败与重试边界）+ 官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例（接线顺序、放弃复制、回退一次后停手、诊断上页） |
 | 阶段 5（诊断规则，功能层） | `src/features/diagnostics.test.mjs`（7 例：每条规则命中上游真实错误串、阶段不串、覆盖表一致、未命中返回 null、AggregateError 展开、不可恢复提示、格式化保留原始串） |
-| 阶段 5（诊断链，端到端） | `node scripts/verify-diagnosis.mjs --profile <none\|manifest\|state\|unknown>`：破坏 profile 后起产物，读诊断文件里 `phase=error` 那行的内容（等价于启动页 `<pre id="error">`，见 R25），断言「命中规则 → 阶段标题 + 下一步 + 原始串」与「未命中 → 退回原始串」。**受单实例锁限制，一轮一个场景（R26）**；脚本不终止进程 |
 | 打包产物（冒烟） | `node scripts/smoke-packaged.mjs`：见 R22/R23，冷启动与温启动各实测通过 |
 | 整体闭环 | 按配置执行完整流程后，产物可正常启动；源仓库仍能 `checkout` 到配置指定的提交 |
-| 构建时间优化 | 连续两次构建，第二次显著更快；只改页面/资源类文件时不触发全量编译（见 design 第 5.1 节）。**另外看缓存决策行**：稳态必须 `build-cache: … hit` 全命中、0 miss —— 曾经出现过「全命中但仍要 20 分钟」的情况，原因是外部 `tar` 进程（见第 4 节），所以「命中率」与「耗时」要同时看 |
+| 构建时间优化 | 连续两次构建，第二次显著更快；只改页面/资源类文件时不触发全量编译（见 design 的[构建脚本时间优化](design.zh.md#41-构建脚本时间优化已实施)）。**另外看缓存决策行**：稳态必须 `build-cache: … hit` 全命中、0 miss —— 曾经出现过「全命中但仍要 20 分钟」的情况，原因是外部 `tar` 进程（见[构建缓存的实现与实测](#4-构建缓存的实现与实测)），所以「命中率」与「耗时」要同时看 |

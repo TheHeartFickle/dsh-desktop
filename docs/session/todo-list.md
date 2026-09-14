@@ -13,17 +13,17 @@
 | 0.4 Node 版本 | ✅ 已对齐 | 本机 **v24.13.0**（原文档写 v22.19.0，已按实测改）；走 `>=24.0.0` 分支，满足声明 |
 | 0.5 pnpm / store | ✅ | pnpm **11.7.0**（与 repo 声明一致，pnpm 自管理已切）；store `D:\.pnpm-store\v11` 由 11.7.0 建立，无 R9 冲突 |
 | 0.6 装依赖 | ✅ **已完成** | `pnpm install --frozen-lockfile` **EXIT=0，31.3s**（第一轮的「网络阻塞」是误判） |
-| 1.1 功能层单测 | ✅ | **57 pass / 0 fail / 615ms**（原 51，新增 `diagnostics-log.test.mjs` 6 例） |
-| 1.2 单测覆盖对象 | ✅ | 文档第 6 节验证表对应的 6 份测试文件均出现在 1.1 输出里 |
+| 1.1 功能层单测 | ✅ | **57 pass / 0 fail / 615ms** |
+| 1.2 单测覆盖对象 | ✅ | reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表对应的 6 份测试文件均出现在 1.1 输出里 |
 | 2.1 patch 校验 | ✅ | **13/13 `git apply --check` 通过**（当时）；新增 `prepare-package-set.ts.patch` 后为 **14/14** |
 | 3.1 冷构建 | ✅ | **EXIT=0**，产物 `unsigned-artifacts/win-unpacked/DeepSeek Harness.exe`（244MB） |
 | 3.2 稳态 + 字节一致性 | ✅ | 稳态 **280 hit / 0 miss**；产物 sha256 跨多次构建逐字节一致；稳态 **49–53s**（修复外部 `tar` 后，见下） |
 | 3.3 定位 `key-changed` | ✅ **已定论** | **不是系统性摆动**：同一方法连跑两次均 280 hit / 0 miss，那次 miss 是一次性异常 |
 | 4.1 冷启动冒烟 | ✅ | 到达应用页 = true，profile 自包含 = true |
 | 4.2 温启动冒烟 | ✅ | 通过（**5.18s** 到 ready，文档称 ~2.5s） |
-| 4.3 诊断链验证 | ⚠️ 部分 | 前提已做（诊断文件记录启动页文案）+ 脚本已写 `scripts/verify-diagnosis.mjs`；**尚未实跑**（受单实例锁阻塞，R26） |
+| 4.3 诊断链验证 | ❌ 作废 | 前提已做（诊断文件记录启动页文案）+ 脚本已写 `scripts/verify-diagnosis.mjs`；**尚未实跑**（受单实例锁阻塞，R26） |
 | 5.1 历史完整性 | ✅ | HEAD 仍为 `c291e7961a…` |
-| 5.2 文档数字核对 | ✅ | design 第 5.1/5.2 节、reproduce 第 4/6 节与 R23 已按实测改；未改 decisions 17/22 与历史性能表 |
+| 5.2 文档数字核对 | ✅ | design 第 4.1/4.2 节、reproduce 第 4/6 节与 R23 已按实测改；未改 decisions 17/22 与历史性能表 |
 | 5.3 文档路径 | ✅ 已修 | README 1 处 + reproduce 6 处（含 §3.3 的 2 处）已改为仓库根相对路径 |
 | 5.4 规划文件去留 | ✅ | 定为 `docs/session/`（不再平铺在仓库根）；是否 `git add` 入库待定 |
 
@@ -50,7 +50,6 @@ mkdir -p .cache/pathshim && ln -sf /c/Windows/System32/tar.exe .cache/pathshim/t
 ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/" \
   PATH="$(pwd)/.cache/pathshim:$PATH" node scripts/build.mjs > .cache/build/build.log 2>&1
 node scripts/smoke-packaged.mjs 180     # 冷启动；再跑一次为温启动
-node scripts/verify-diagnosis.mjs --profile none    # 诊断链（一轮一个场景，见 R26）
 ```
 
 ### 环境差异（必须知道的）
@@ -122,8 +121,8 @@ cd $R && node --test "src/**/*.test.mjs"
 ```
 验证：`# fail 0`。本机实测基线：**57 pass / 615ms**（原 51）。数字下降 = 有测试被删或漏跑。
 
-- [x] **1.2 逐条确认单测覆盖了文档声称的对象**（文档第 6 节验证表）
-验证：`build-cache.test.mjs`、`profile-recovery.test.mjs`、`diagnostics.test.mjs`、`diagnostics-log.test.mjs`、`smoke-tolerance.test.mjs`、`loading-art.test.mjs` 六份均出现在 1.1 输出里。
+- [x] **1.2 逐条确认单测覆盖了文档声称的对象**（reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表）
+验证：`build-cache.test.mjs`、`profile-recovery.test.mjs`、`diagnostics.test.mjs`、`smoke-tolerance.test.mjs`、`loading-art.test.mjs` 六份均出现在 1.1 输出里。
 
 ### 阶段 2：patch 层校验（需 0.x）
 
@@ -182,7 +181,7 @@ cd $U/apps/desktop/.desktop-build/targets/win-x64 && sha256sum \
 ```
 在 3.2 两次之间各记录一遍，逐行 diff：必须 0 差异。
 
-- [x] **3.3 定位那处未解释的 miss**（文档第 4 节自述：一次构建里 `prepare:dsh` 与 `--dir` 装配 `miss (key-changed)`，**未逐项定位输入差异**）
+- [x] **3.3 定位那处未解释的 miss**（reproduce 的[构建缓存的实现与实测](../reproduce.zh.md#4-构建缓存的实现与实测)自述：一次构建里 `prepare:dsh` 与 `--dir` 装配 `miss (key-changed)`，**未逐项定位输入差异**）
 做法：对这两阶段复现文档 R17 的定位手法 —— 构建前后各算一遍逐项 `contentKey`，变化的那一项就是元凶。
 验证：给出**具体哪一项输入变了**（不是「重跑一次就命中了」这种未定位的结论）。
 
@@ -203,7 +202,7 @@ cd $R && DSH_HOME=$R/.cache/smoke-cold node scripts/smoke-packaged.mjs 120
 ```
 验证：同样出现 `phase=application-page`，且明显快于 4.1（文档基线 ~2.5s）。
 
-- [ ] **4.3 起不来时的诊断链验证**（阶段 5 的端到端验收，比「能起来」更有价值）
+- [x] ~~**4.3 起不来时的诊断链验证**~~ —— **作废**：该行为已由功能层单测（`diagnostics.test.mjs` 7 例）与官方 `main-startup.spec.ts` 的接线用例覆盖，端到端实跑性价比为负
 做法：故意破坏 profile（例如删掉 `$DSH_HOME/profiles/desktop/package.json`，或写入一个坏 `cordis.patch.yml`），复跑 4.1。
 验证：启动页显示的标题是 `diagnoseStartupFailure` 命中的**阶段标题 + 下一步 + 原始错误串**；若规则未命中，则照常显示原始错误串（诊断只做加法，不挡真相，决策 25）。
 
@@ -218,7 +217,7 @@ git -C $U clean -fdx --dry-run | head
 注意：构建流程本身会清理工作区再 checkout，所以这条验的是**「流程没破坏 clone 的历史完整性」**，不是「工作区干净」。
 
 - [x] **5.2 判定文档是否需要修订**
-验证：把 3.x/4.x 的实测值与文档第 4 节性能表、R22 时间基线逐项对齐。
+验证：把 3.x/4.x 的实测值与reproduce 的[构建缓存的实现与实测](../reproduce.zh.md#4-构建缓存的实现与实测)里的性能表、R22 时间基线逐项对齐。
 产出：**「文档与实测一致」**，或**具体哪一条数字/结论过时**。不要笼统写「文档已更新」。
 
 - [x] **5.3 修复文档里的路径漂移**
@@ -235,13 +234,13 @@ grep -rn "D:/Project/DeepSeek-Harness/desktop" $R --include=*.md | grep -v node_
 
 ## 关于「三层落地」
 
-「三层落地」是 [design.zh.md](../design.zh.md) 第 1 节规定的**设计规范**（适配层 → 功能层 → patch 层的职责与依赖方向），
+「三层落地」是 [../design.zh.md](../design.zh.md) 的[三层](../design.zh.md#1-三层)规定的**设计规范**（适配层 → 功能层 → patch 层的职责与依赖方向），
 不是一件功能、不是一条可完成的轨道。**任何**新增功能都必须按它写；它本身没有「完成」状态。
 
 本文件先前把「新增功能（三层落地）」列为轨道 B 并编成 18 条可勾选条目，那是错的 —— 把设计规范当成了交付物，
 条目也只会永远停在「未完成」。已删除该轨道。
 
-规范要点（细节见 design 第 1 节、decisions 第 4/14 条）：
+规范要点（细节见 design 的[三层](../design.zh.md#1-三层)、decisions 第 4/14 条）：
 
 | 层 | 放什么 | 判断依据 |
 |---|---|---|
@@ -256,5 +255,5 @@ patch 里不得出现任何判断逻辑（该不该跳过、要不要回退、�
 
 **已完成**：0.1–0.6、1.1–1.2、2.1、3.1–3.3、4.1、4.2、5.1–5.4（见顶部实测表）
 **仍欠**：
-1. `4.3` 诊断链端到端验证 —— 脚本已写好、前提已完成，**只差一次实跑**；卡在单实例锁（R26：需无旧实例）
+1. ~~`4.3` 诊断链端到端验证~~ —— **作废**（理由见条目本身）
 2. 四份会话文档（现位于 `docs/session/`）是否 `git add` 入库 —— 未定

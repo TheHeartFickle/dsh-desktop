@@ -34,51 +34,7 @@ patch 层 ──调度已封装能力──▶ 功能层(func) ──调用─�
 **透明原则**：流程不在乎它处理的是什么。**配置文件、构建脚本、功能代码对这套流程完全透明** ——
 不会因为「这是构建脚本」「这是配置文件」就产生特殊分支或特殊处理。
 
-## 2. 目录结构
-
-```text
-desktop/                          ← 本仓库
-  deepseek-harness/               ← 源仓库 clone（内含独立 .git；不进入本仓库跟踪）
-  src/
-    build.config.json            ← 构建配置：checkout 提交、复制映射、patch 列表、构建指令
-    adaptator/                    ← 适配层（独立文件）
-      renderer/                   ←   渲染进程部分：经典脚本（第 5.2 节）
-    features/                     ← 功能层（独立文件）
-      build-cache.{mjs,d.mts}     ←   构建缓存（第 5.1 节；注入到构建脚本）
-      profile-recovery.{mjs,d.mts}←   复制 web 配置 / 快照回退 / 回退提示（第 5.2 节）
-      diagnostics.{mjs,d.mts}     ←   启动失败的阶段化诊断（第 5.2 节）
-      diagnostics-log.{mjs,d.mts} ←   诊断文件的行格式与写入（第 5.2 节）
-      tarball.{mjs,d.mts}         ←   进程内读 tarball，替代逐次 spawn 外部 tar（第 5.1 节）
-      smoke-tolerance.mjs         ←   上游 payload smoke 的检查项容忍策略（见 reproduce R6）
-      renderer/                   ←   渲染进程部分：经典脚本 + 同源 CSS
-    patch/                        ← patch 层：每个目标源文件一个 patch
-      build.ts.patch
-      electron-builder.config.mjs.patch
-      locale.ts.patch
-      main.ts.patch
-      main-startup.spec.ts.patch
-      pack.ts.patch
-      package-target.ts.patch
-      prepare-dsh.ts.patch
-      prepare-package-set.ts.patch
-      project-manager.ts.patch
-      runtime-payload-smoke.mjs.patch
-      startup.html.patch
-      startup.js.patch
-      tsdown.config.ts.patch
-  scripts/
-    build.mjs                     ← 构建入口：读配置 → 校验 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
-    smoke-packaged.mjs            ← 打包产物启动冒烟（隔离 DSH_HOME + 诊断文件判据，第 6 节/R22）
-    verify-diagnosis.mjs          ← 诊断链验证：破坏 profile 后核对启动页文案（第 5.2 节 / R25）
-    make-icons.py                 ← 资产生成（与构建流程无关）
-  assets/                         ← 静态资源（加载动画图片由 copy 映射进源仓库）
-  archive/desktop-legacy/         ← 已归档的早期自研壳
-  docs/                           ← 项目文档（四份，见下）
-    design.zh.md / decisions.zh.md / reproduce.zh.md / desktop-guide.zh.md
-    session/                      ← 探索过程的会话记录（非项目文档；结论以上面四份为准）
-```
-
-## 3. 构建流程
+## 2. 构建流程
 
 流程完全由 `build.config.json` 驱动，构建脚本只是执行器：
 
@@ -107,9 +63,9 @@ desktop/                          ← 本仓库
 
 `build[].ignoreTargets` 声明"哪些注入目标不参与这条构建指令的输入"（当前是 `apps/desktop/renderer`
 与 `apps/desktop/local`）：**没被声明的注入物一律算输入**，因此新增 copy/patch 只会让该阶段的缓存多失效
-一次，不会出现"输入变了却命中"。缓存契约见第 5.1 节。
+一次，不会出现"输入变了却命中"。缓存契约见 [构建脚本时间优化](#41-构建脚本时间优化已实施)。
 
-## 4. 当前状态
+## 3. 当前状态
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -122,15 +78,15 @@ desktop/                          ← 本仓库
 | — | 打包产物启动冒烟（诊断文件记录启动阶段） | ✅ |
 
 阶段 4/5 须走三层架构，**不可做成 dsh 插件**（原因见 [decisions.zh.md](decisions.zh.md) 第 6 条）；
-各项怎么验证见 [reproduce.zh.md](reproduce.zh.md) 第 6 节。
+各项怎么验证见 [reproduce.zh.md](reproduce.zh.md) 的[验证方式](reproduce.zh.md#6-验证方式)。
 
-## 5. 功能设计
+## 4. 功能设计
 
-### 5.1 构建脚本时间优化（已实施）
+### 4.1 构建脚本时间优化（已实施）
 
 | 项 | 内容 |
 |---|---|
-| 问题 | 源仓库的构建体系没有阶段级跳过：`release:pack` 对 266 个包逐个 `pnpm pack`（串行 0.54s/个）；`prepare:runtime` 每轮重解压；`prepare:dsh` 在干净临时目录里重装 506 个包；`electron-builder` 全量重装配。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`）。**另有一项与缓存无关的开销**：`scripts/release/tarball.ts` 读 tarball 走外部 `tar` 进程（`capture('tar', […])` → `spawnSync`），而 `pack.ts` 对每个成员、`prepare-package-set.ts` 对每个 tarball 各调一次 —— 单次构建数百个进程，成本与 tarball 大小无关（详见 reproduce 第 4 节） |
+| 问题 | 源仓库的构建体系没有阶段级跳过：`release:pack` 对 266 个包逐个 `pnpm pack`（串行 0.54s/个）；`prepare:runtime` 每轮重解压；`prepare:dsh` 在干净临时目录里重装 506 个包；`electron-builder` 全量重装配。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`）。**另有一项与缓存无关的开销**：`scripts/release/tarball.ts` 读 tarball 走外部 `tar` 进程（`capture('tar', […])` → `spawnSync`），而 `pack.ts` 对每个成员、`prepare-package-set.ts` 对每个 tarball 各调一次 —— 单次构建数百个进程，成本与 tarball 大小无关（详见 reproduce 的[构建缓存的实现与实测](reproduce.zh.md#4-构建缓存的实现与实测)） |
 | 目标 | 重复构建的时间显著下降；只改页面/资源类文件时，不重跑编译与打包 |
 | 判据 | ① 连续两次构建，第二次明显快于第一次 ② 只改页面/资源类文件后的构建不触发全量编译 ③ 产物内容正确、可正常启动 |
 | 约束 | 遵守透明原则：**不得**靠外部传入「跳过哪个阶段」的标志；**不得**在流程里为某类文件或某个阶段开特例；优化对「处理的是什么」保持透明 |
@@ -157,10 +113,10 @@ patch 只把两处调用换成它。放在功能层的原因是「怎么读 tarb
    与 `packed/.pack-cache/<name>/`），不搬家；每个决策都往构建日志打一行
    `build-cache: <stage> hit|miss (<原因>)`。删掉这两处即回到冷缓存，不需要别的开关。
 
-接线点清单与实测数据见 [reproduce.zh.md](reproduce.zh.md) 第 4 节；为什么这么选、否掉了哪些做法，
+接线点清单与实测数据见 [reproduce.zh.md](reproduce.zh.md) 的[构建缓存的实现与实测](reproduce.zh.md#4-构建缓存的实现与实测)；为什么这么选、否掉了哪些做法，
 见 [decisions.zh.md](decisions.zh.md) 第 12、15–20、22 条。
 
-### 5.2 阶段 4/5 功能
+### 4.2 阶段 4/5 功能
 
 | 能力 | 设计要点 |
 |---|---|
@@ -181,22 +137,6 @@ patch 只把两处调用换成它。放在功能层的原因是「怎么读 tarb
 | Host 启动失败（复制成功后） | 回退一次 → 重装 → 重试启动一次；第二次再失败交官方恢复页 |
 | `showStartupError()` | `diagnoseStartupFailure` 命中的阶段标题 + 下一步 + 原始错误串 |
 | 回退后成功进入应用页 | `executeJavaScript` 注入一次自绘 toast |
-
-**启动过程的可观测性**：打包产物是 GUI 进程，没有控制台（`ELECTRON_ENABLE_LOGGING=1` 也测不到可用日志，
-实测是 2 字节空日志）。所以主进程在设置了 `DSH_DESKTOP_DIAGNOSTIC_FILE` 时把启动过程写进该文件，
-未设置时完全不写。每行一个 `<ISO 时间> phase=<阶段>`：
-
-| 行 | 写入时机 | 内容 |
-|---|---|---|
-| `phase=starting` / `phase=ready` / `phase=application-page` | `publishBackend` 记录后端状态 | 只有阶段名，供冒烟判定是否真的推进到应用页 |
-| `phase=error <文案>` | 同上，但状态是失败 | **附上启动页实际渲染的那份文案**（`state.message`，即 `formatDiagnosis` 或 `desktopErrorState` 的结果）；换行压成空格以保持一行 |
-| `phase=error-detail <原始串>` | `showStartupError` 入口 | 未经诊断加工的原始错误串，便于与上一条对照 |
-
-**实现位置**：这些行的格式（时间戳、`detail` 拼接与换行压平）与写盘都在功能层 `src/features/diagnostics-log.mjs`（`formatDiagnosticLine` / `appendDiagnosticLine`）；patch 层只保留「从哪个环境变量取文件、在哪些时机调用」这类接线。这样调整行格式、换存储位置都只改功能层，不必动 patch（此前这两件事直接写在 `main.ts` 的 patch 里，属越界）。
-
-> `phase=error` 带内容的意义：让「启动页到底显示了什么」在没有控制台的情况下**可被程序读取**。
-> 上游启动页把文案写进 `<pre id="error">` 的 `textContent`（`startup.js`：`failed ? state.message : ''`），
-> 与本字段同源，所以读文件等价于读页面。`scripts/verify-diagnosis.mjs` 正是按这个判据验证诊断链。
 
 **复制的是配置语义而非目录**（决策 23）：`package.json` 的 `dependencies`/`overrides`/第三方
 `dsh.profile.bundles` 条目，以及 `pnpm-workspace.yaml` 的 `allowBuilds` 段（按行合并，不整文件照搬）。

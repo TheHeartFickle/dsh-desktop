@@ -1,17 +1,18 @@
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index a73a6223a5..91ef4a3274 100644
+index a73a6223a5..cbb43075eb 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
  
++import { appendFileSync } from 'node:fs'
  import { readFile, writeFile } from 'node:fs/promises'
 -import { extname, join, normalize, resolve, sep } from 'node:path'
 +import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
  import { fileURLToPath } from 'node:url'
  import {
    app,
-@@ -22,6 +22,12 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+@@ -22,6 +23,11 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
  import { DesktopUpdateCoordinator } from './update-coordinator.ts'
  import { desktopErrorState } from './startup-error.ts'
  import { startupFailureDocument } from './startup-document.ts'
@@ -20,7 +21,6 @@ index a73a6223a5..91ef4a3274 100644
 +  webProfileCopyChanged, webProfileCopyPlan,
 +} from '../local/features/profile-recovery.mjs'
 +import { diagnoseStartupFailure, formatDiagnosis } from '../local/features/diagnostics.mjs'
-+import { appendDiagnosticLine } from '../local/features/diagnostics-log.mjs'
  
  const SCHEME = 'dsh-app'
  let focusPrimaryWindow = (): void => {}
@@ -72,17 +72,17 @@ index a73a6223a5..91ef4a3274 100644
 +  /**
 +   * Record one startup phase when the shell was asked for a diagnostic file. The packaged
 +   * application has no console, so this is how a smoke test observes which phase it reached.
-+   * Whether to write at all is wiring; the line format and the write live in the feature layer
-+   * (`local/features/diagnostics-log.mjs`).
 +   */
-+  const recordPhase = (phase: string, detail?: string): void => {
++  const recordPhase = (phase: string): void => {
 +    const file = process.env.DSH_DESKTOP_DIAGNOSTIC_FILE
 +    if (file === undefined || file === '') return
-+    appendDiagnosticLine(file, phase, detail)
++    try { appendFileSync(file, `${new Date().toISOString()} phase=${phase}\n`) } catch (error) {
++      console.error('dsh desktop: diagnostic file is not writable', error)
++    }
 +  }
 +
    const publishBackend = (state: DesktopBackendState): void => {
-+    recordPhase(state.phase, state.phase === 'error' ? state.message : undefined)
++    recordPhase(state.phase)
      for (const window of BrowserWindow.getAllWindows()) {
        window.webContents.send(DESKTOP_IPC.backendState, state)
      }
@@ -135,19 +135,18 @@ index a73a6223a5..91ef4a3274 100644
    const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
      updateState = state
      for (const window of BrowserWindow.getAllWindows()) {
-@@ -248,7 +339,10 @@ async function main(): Promise<void> {
+@@ -248,7 +339,9 @@ async function main(): Promise<void> {
  
    const showStartupError = async (error: unknown): Promise<void> => {
      if (quitting) return
 -    pageError = desktopErrorState(error)
-+    recordPhase('error-detail', error instanceof Error ? error.message : String(error))
 +    // Feature layer: diagnostics.mjs maps the first matching failure stage onto the startup page.
 +    const diagnosis = diagnoseStartupFailure(error, { profileRecovery: profileRecoveryAvailable() })
 +    pageError = diagnosis === null ? desktopErrorState(error) : { phase: 'error', message: formatDiagnosis(diagnosis) }
      try { await navigateMain(startupUrl) }
      catch (navigationError) {
        await showEmergencyError(new AggregateError([error, navigationError], messages.startupFailed))
-@@ -259,12 +353,23 @@ async function main(): Promise<void> {
+@@ -259,12 +352,23 @@ async function main(): Promise<void> {
      startup ??= (async () => {
        pageError = undefined
        await navigateMain(startupUrl)

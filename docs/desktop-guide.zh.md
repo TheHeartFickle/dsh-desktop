@@ -179,5 +179,5 @@ ENOENT: no such file or directory, stat '...\node_modules\.pnpm\node_modules\@de
 | 打包与更新的理由、替代方案、安全约束 | `.agents/notes/implemented/architecture/2026-08-25-electron-desktop-packaging-and-updates.zh.md` |
 | Web UI 使用指南（桌面端复用同一界面） | `docs/user/guide/index.zh.md` |
 | 桌面组合相对 Web 组合的差异补丁 | `apps/desktop-host/config/desktop.cordis.patch.yml` |
-| 构建残留清理实现（第 6 节提到的 `clean`） | `scripts/clean.ts` |
+| 构建残留清理实现（[本次排障](#6-本次排障devdesktop-构建失败)提到的 `clean`） | `scripts/clean.ts` |
 | 客户端 UI 文案字典（菜单、启动页、插件窗口） | `apps/desktop/src/locale.ts` |

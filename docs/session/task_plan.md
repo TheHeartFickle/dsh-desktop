@@ -7,7 +7,7 @@
 - **轨道 A**：出「环境复刻 + 全链路验证」清单 —— 把文档自述的阶段 1–5 结论在本机复现成可验证事实
 - 粒度：**每条 todo 带可执行命令 + 验证判据**
 
-> ⚠️ 最初还把「新增功能（三层落地）」列为「轨道 B」，那是**错的**：「三层落地」是 design 第 1 节规定的
+> ⚠️ 最初还把「新增功能（三层落地）」列为「轨道 B」，那是**错的**：「三层落地」是 design 的[三层](../design.zh.md#1-三层)规定的
 > **设计规范**，不是一件功能、也不是可完成的交付物。该轨道已删除（见 [todo-list.md](todo-list.md)「关于三层落地」）。
 
 交付物：`todo-list.md`（清单本体）。
@@ -17,7 +17,7 @@
 | 项 | 结论 | 取证方式 |
 |---|---|---|
 | 仓库状态 | 干净，HEAD = `0af4544`，2026-09-13 | `git status` / `git log` |
-| 文档自述阶段 | 阶段 1–5 全部 ✅ | `docs/design.zh.md` 第 4 节 |
+| 文档自述阶段 | 阶段 1–5 全部 ✅ | design 的[当前状态](../design.zh.md#3-当前状态) |
 | 功能层单测 | **57/57 通过**（约 615ms），无需 Electron / 官方代码 | `node --test "src/**/*.test.mjs"` |
 | 上游源仓库 | 已 clone 到 `deepseek-harness/`，HEAD = 基线 `c291e7961a` | `git -C deepseek-harness rev-parse HEAD` |
 | 上游地址 | `github.com/deepseek-ai/deepseek-harness.git`（仓库内原本只有占位符，已查明） | `git remote -v` |
@@ -49,11 +49,11 @@
 | 7 | 轨道 A 执行：本机可独立验证项 | complete | 1.1 = 当时 51 pass；2.1 = 当时 13 个 patch 全通过（现已 14 个）；5.3 = 5 处路径已修 |
 | 8 | 轨道 A 执行：装依赖 | complete | ✅ `pnpm install` EXIT=0，31.3s（第二会话误判为网络阻塞，已修正） |
 | 9 | 轨道 A 执行：构建 + 冒烟 + 闭环 | complete | ✅ 3.1 EXIT=0；3.2 产物 sha256 跨 3 次一致；4.1/4.2 通过；5.1 HEAD 完整 |
-| 10 | 定位 `prepare:dsh` 的 `key-changed`（todo 3.3） | complete | **定论**：缓存稳定（同一方法连跑两次 280 hit / 0 miss）。那次 miss 是一次性异常，findings 第 9 节已被第 10 节推翻 |
+| 10 | 定位 `prepare:dsh` 的 `key-changed`（todo 3.3） | complete | **定论**：缓存稳定（同一方法连跑两次 280 hit / 0 miss）。那次 miss 是一次性异常；根因见 findings 的[外部 tar 进程](findings.md#5-外部-tar-进程曾让稳态构建退化成-20-分钟已修复) |
 | 11 | 定位稳态 20 分钟的根因并修复 | complete | **根因**：`tarballFiles` / `packedManifest` 逐次 spawn 外部 `tar`。**修复**：功能层 `tarball.{mjs,d.mts}` 进程内读；**稳态 1180s → 49–53s** |
-| 12 | 文档按实测修订（todo 5.2） | complete | design 第 5.1/5.2 节、reproduce 第 4/6 节已改；未改 decisions 17/22 与历史性能表（依据仍成立） |
-| 13 | 诊断文件记录启动页文案（4.3 前提） | complete | `main.ts.patch`：`recordPhase(phase, detail?)`，`phase=error` 附文案、新增 `phase=error-detail` |
-| 14 | 诊断链端到端验证脚本（todo 4.3） | 部分 | `scripts/verify-diagnosis.mjs` 已写好（不终止进程）；**尚未实跑** —— 受单实例锁阻塞（R26），需先关掉测试留下的实例 |
+| 12 | 文档按实测修订（todo 5.2） | complete | design 第 4.1/4.2 节、reproduce 第 4/6 节已改；未改 decisions 17/22 与历史性能表（依据仍成立） |
+| 13 | ~~诊断文件记录启动页文案~~ | **作废** | 为 4.3 而下沉的功能层 `diagnostics-log` 与 `error-detail` 已全部删除 |
+| 14 | ~~诊断链端到端验证（todo 4.3）~~ | **作废** | `scripts/verify-diagnosis.mjs` 已删除 |
 | 15 | ~~轨道 B：新增功能~~ | **作废** | 「三层落地」是设计规范而非功能，不该列为轨道；已从清单删除 |
 
 ## 文档与实测的偏差（均已定论）
@@ -63,7 +63,7 @@
 | 1 | 稳态构建 **0.85 min** | 修复前 **1180s**；修复后 **49–53s** | 文档数字**本来是对的**；本机复现不到的原因是外部 `tar` 进程（已修复）。design/reproduce 已改 |
 | 2 | 温启动 **~2.5s** 到 ready | **5.18s** | 机器相关，仍成立；reproduce 已补实测值 |
 | 3 | 冷启动 ~6.4s 到 ready | **5.37s**（更快） | 同上 |
-| 4 | `prepare:dsh`/`--dir` miss「未逐项定位」 | 连续两次 280 hit / 0 miss | **不是系统性摆动**，是一次性异常；findings 第 9 节的判断已作废 |
+| 4 | `prepare:dsh`/`--dir` miss「未逐项定位」 | 连续两次 280 hit / 0 miss | **不是系统性摆动**，是一次性异常；findings 里「键摆动」那节已作废 |
 
 ## 阻塞点
 
@@ -93,13 +93,12 @@
 |---|---|---|
 | `README.md` | 路径漂移修正 | 已改未提交 |
 | `docs/design.zh.md` | 5.1 补外部 `tar` 问题与 `tarball.mjs`；5.2 补启动过程可观测性；目录结构补新文件 | 已改未提交 |
-| `docs/reproduce.zh.md` | 路径修正；第 4 节新增「外部 `tar` 进程」段；第 6 节验证表重排并补诊断链；R23 修正、新增 R25/R26 | 已改未提交 |
+| reproduce | 路径修正；[构建缓存的实现与实测](../reproduce.zh.md#4-构建缓存的实现与实测)新增「外部 `tar` 进程」段；[验证方式](../reproduce.zh.md#6-验证方式)表重排并补诊断链；R23 修正、新增 R25/R26 | 已改未提交 |
 | `src/build.config.json` | `patches` 13 → 14（新增 `prepare-package-set.ts.patch`） | 已改未提交 |
 | `src/patch/pack.ts.patch` | 合并原缓存 hunk + 进程内 `listTarballEntries` | 已改未提交 |
-| `src/patch/main.ts.patch` | `recordPhase(phase, detail?)`；`phase=error` 附启动页文案；新增 `phase=error-detail` | 已改未提交 |
+| `src/patch/main.ts.patch` | ~~诊断文案相关改动~~ 已回退到 `0af4544` 版本 | 已改未提交 |
 | `src/features/tarball.mjs` / `.d.mts` | 新增：进程内读 tarball | 未跟踪 |
 | `src/patch/prepare-package-set.ts.patch` | 新增：manifest/条目改走功能层 | 未跟踪 |
-| `scripts/verify-diagnosis.mjs` | 新增：诊断链验证（不终止进程） | 未跟踪 |
 | `docs/session/{task_plan,findings,progress,todo-list}.md` | 会话工作文档（已从仓库根移入该目录） | 未跟踪（是否入库待定） |
 | `AGENTS.md` | 另一会话写入 | 未跟踪（本会话未碰） |
 | `deepseek-harness/` | 上游 clone + 依赖 + 构建产物 | 被忽略 |

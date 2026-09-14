@@ -9,7 +9,7 @@ index d34cf1bf26..38e0ff04e1 100644
 -    deps: { neverBundle: ['electron'] },
 +    // Local customization: the injected feature layer stays a separate runtime file, so only the
 +    // entry that imports it declares it (the preload entries must stay self-contained).
-+    deps: { neverBundle: ['electron', '../local/features/profile-recovery.mjs', '../local/features/diagnostics.mjs', '../local/features/diagnostics-log.mjs'] },
++    deps: { neverBundle: ['electron', '../local/features/profile-recovery.mjs', '../local/features/diagnostics.mjs'] },
    },
    ...(['preload', 'preload-app'] as const).map(name => ({
      // Sandboxed Electron preloads run as CommonJS even though the application package is ESM.
