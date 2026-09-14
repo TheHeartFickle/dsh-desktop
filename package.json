@@ -5,6 +5,7 @@
   "description": "在官方 dsh 桌面端之上叠加本地定制（分层源码 + 上游补丁）",
   "type": "module",
   "scripts": {
+    "apply": "node scripts/build.mjs --apply-only",
     "build": "node scripts/build.mjs",
     "test": "node --test \"src/**/*.test.mjs\""
   }

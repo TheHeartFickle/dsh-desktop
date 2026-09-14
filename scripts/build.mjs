@@ -9,6 +9,9 @@
  *   5. 按 patches 顺序应用 git patch（先 --check 再 apply）
  *   6. 按 build 列表在源仓库执行构建指令
  *
+ * `--apply-only`（`npm run apply`）在第 5 步之后停下：只把功能层、适配层与 patch 落到源仓库，
+ * 不执行第 6 步的构建指令。前五步与完整构建逐字相同，所以它是「先摆好现场，再自己跑构建或调试」的入口。
+ *
  * 本脚本不含任何源仓库脚本名、路径、提交号、镜像地址的硬编码 —— 这些都在配置里。
  * 路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
  * `copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。
@@ -21,6 +24,8 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..')
+/** 只做第 1–5 步（复制 + 打 patch），不执行配置里的构建指令。 */
+const APPLY_ONLY = process.argv.includes('--apply-only')
 const SRC_DIR = join(REPO_ROOT, 'src')
 const CONFIG_PATH = join(SRC_DIR, 'build.config.json')
 const LOG_DIR = join(REPO_ROOT, '.cache', 'build')
@@ -112,6 +117,14 @@ for (const entry of config.patches) {
   }
   git(['apply', patchPath])
   step(`已应用 ${entry.file} → ${entry.target}`)
+}
+
+// ---------------------------------------------------------------- 到此为止（--apply-only）
+
+if (APPLY_ONLY) {
+  step(`--apply-only：已复制并打上全部 patch，按配置跳过构建指令 ${config.build.map(entry => entry.command.join(' ')).join('、')}`)
+  console.log('build: 完成')
+  process.exit(0)
 }
 
 // ---------------------------------------------------------------- 6. 构建
