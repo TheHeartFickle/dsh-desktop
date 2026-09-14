@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
-index 2b2e47d66d..a8f8f1621f 100644
+index 2b2e47d66d..4d8fd24008 100644
 --- a/apps/desktop/tests/main-startup.spec.ts
 +++ b/apps/desktop/tests/main-startup.spec.ts
 @@ -14,6 +14,11 @@ const harness = await vi.hoisted(async () => {
@@ -38,7 +38,7 @@ index 2b2e47d66d..a8f8f1621f 100644
        preparing = deferred(); prepared = deferred(); hostStarted = deferred()
        navigated = deferred(); errorPublished = deferred(); quitCompleted = deferred()
      },
-@@ -104,12 +117,13 @@ vi.mock('electron', () => ({
+@@ -104,12 +117,14 @@ vi.mock('electron', () => ({
    Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
  }))
@@ -49,25 +49,17 @@ index 2b2e47d66d..a8f8f1621f 100644
      readonly applyRelease = harness.applyRelease
      readonly assertProfileRuntime = harness.assertProfileRuntime
      canRecoverProfile = harness.canRecoverProfile
++    async ensureProfileDirectory(_projectDir: string): Promise<void> { harness.featureCalls.push('ensure-directory') }
 +    async ensureProfilePackages(_projectDir: string): Promise<void> { harness.featureCalls.push('install') }
      async mutate(_mutation: unknown, hooks: { beforeChange(): Promise<void>; afterChange(): Promise<void> }) {
        await hooks.beforeChange()
        harness.pluginsEnabled = false
-@@ -120,6 +134,32 @@ vi.mock('../src/project-manager.ts', () => ({
+@@ -120,6 +135,23 @@ vi.mock('../src/project-manager.ts', () => ({
      }
    },
  }))
-+vi.mock('../local/features/diagnostics.mjs', () => ({
-+  diagnoseStartupFailure: (error: unknown) => {
-+    const message = error instanceof Error ? error.message : String(error)
-+    return message.includes('not installed')
-+      ? { stage: 'graph', rule: 'profile-not-installed', title: 'profile 与插件图失败', hint: '下一步提示', message }
-+      : null
-+  },
-+  formatDiagnosis: (diagnosis: { title: string; hint: string; message: string }) =>
-+    [diagnosis.title, diagnosis.hint, '', '---', diagnosis.message].join(String.fromCharCode(10)),
-+}))
-+vi.mock('../local/features/profile-recovery.mjs', () => ({
++vi.mock('../local/features/profile-recovery.mjs', async (importOriginal) => ({
++  ...(await importOriginal<typeof import('../local/features/profile-recovery.mjs')>()),
 +  webProfileCopyPlan: () => {
 +    harness.featureCalls.push('plan')
 +    return harness.profileCopyPlan
@@ -86,7 +78,7 @@ index 2b2e47d66d..a8f8f1621f 100644
  vi.mock('../src/host-process.ts', () => ({ DesktopHostProcess: harness.FakeHost }))
  vi.mock('../src/update-coordinator.ts', () => ({ DesktopUpdateCoordinator: vi.fn() }))
  
-@@ -297,11 +337,11 @@ describe('desktop main startup', () => {
+@@ -297,11 +329,11 @@ describe('desktop main startup', () => {
      harness.hosts[0]!.ready.resolve()
      await Promise.all([retry, secondRetry, harness.navigated.promise])
      expect(harness.applyRelease).toHaveBeenCalledTimes(1)
@@ -100,7 +92,7 @@ index 2b2e47d66d..a8f8f1621f 100644
      })
      expect(harness.hosts[0]!.start).toHaveBeenCalledTimes(1)
      expect(harness.windows).toHaveLength(1)
-@@ -346,6 +386,77 @@ describe('desktop main startup', () => {
+@@ -346,6 +378,77 @@ describe('desktop main startup', () => {
      expect(harness.dialog.showErrorBox).not.toHaveBeenCalled()
    })
  
@@ -109,7 +101,7 @@ index 2b2e47d66d..a8f8f1621f 100644
 +    harness.profileCopyChanged = true
 +    await import('../src/main.ts')
 +    await harness.preparing.promise
-+    expect(harness.featureCalls).toEqual(['plan', 'apply', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install'])
 +    harness.prepared.resolve()
 +    await harness.hostStarted.promise
 +    expect(harness.assertProfileRuntime).toHaveBeenCalledWith('desktop-test-profiles/desktop')
@@ -125,7 +117,7 @@ index 2b2e47d66d..a8f8f1621f 100644
 +    vi.spyOn(console, 'error').mockImplementation(() => {})
 +    await import('../src/main.ts')
 +    await harness.errorPublished.promise
-+    expect(harness.featureCalls).toEqual(['plan', 'apply', 'install', 'rollback', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install', 'rollback', 'install'])
 +    expect(harness.hosts).toHaveLength(0)
 +    expect(harness.windows[0]!.urls.at(-1)).toBe('dsh-app://shell/startup.html')
 +  })
@@ -146,7 +138,7 @@ index 2b2e47d66d..a8f8f1621f 100644
 +    harness.hosts[0]!.exited.resolve()
 +    await firstFailure.promise
 +    await retryStarted
-+    expect(harness.featureCalls).toEqual(['plan', 'apply', 'install', 'rollback', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install', 'rollback', 'install'])
 +    expect(logged).toHaveBeenCalledWith(
 +      'dsh desktop: rolled the profile back to the pre-copy configuration; retrying once',
 +    )

@@ -1,16 +1,29 @@
 diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
-index a91c6af6b2..cebf45ce06 100644
+index a91c6af6b2..1153dade84 100644
 --- a/apps/desktop/src/project-manager.ts
 +++ b/apps/desktop/src/project-manager.ts
-@@ -279,6 +279,22 @@ export class DesktopProjectManager {
+@@ -279,6 +279,38 @@ export class DesktopProjectManager {
      }
    }
  
 +  /**
-+   * Reconcile the profile with the current runtime unconditionally: rebuild dependencies and refresh
-+   * the reserved host package links. Restoring files from a snapshot leaves package state stale in
-+   * ways `applyRelease` cannot observe, so the caller uses this instead of that fast path.
-+   * @param projectDir - Profile whose configuration files were just restored.
++   * Create the profile in the official shape when it does not exist yet, so callers that write
++   * profile files before the first release start from a valid manifest and workspace.
++   * @param projectDir - Profile directory to create.
++   */
++  async ensureProfileDirectory(projectDir: string): Promise<void> {
++    await this.withLock(async () => {
++      this.descriptor = this.readRuntime()
++      if (!existsSync(join(projectDir, 'package.json'))) createPluginProfile(projectDir)
++    })
++  }
++
++  /**
++   * Make the installed packages match the profile's manifest: rebuild dependencies from scratch and
++   * refresh the reserved host package links. Restoring files from a snapshot, or writing a manifest
++   * outside the official package commands, leaves package state stale in ways `applyRelease` cannot
++   * observe, so the caller uses this instead of that fast path.
++   * @param projectDir - Profile whose configuration files were just written or restored.
 +   */
 +  async ensureProfilePackages(projectDir: string): Promise<void> {
 +    await this.withLock(async () => {
@@ -18,7 +31,10 @@ index a91c6af6b2..cebf45ce06 100644
 +      if (!existsSync(join(projectDir, 'package.json')) || !existsSync(join(projectDir, 'pnpm-workspace.yaml'))) {
 +        throw new Error('desktop project: restored profile is missing its configuration files')
 +      }
-+      await this.reconcileProfile(projectDir, readDesktopProfileState(projectDir), true)
++      unlinkDesktopHostPackages(projectDir)
++      removeOwnedDirectory(join(projectDir, 'node_modules'))
++      await this.runPnpm(projectDir, ['install', '--ignore-scripts'])
++      await this.finishPackageOperation(projectDir)
 +    })
 +  }
 +

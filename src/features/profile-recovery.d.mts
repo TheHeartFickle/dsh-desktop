@@ -90,3 +90,21 @@ export function installProbeFailures(options: {
  * @returns 自执行表达式。
  */
 export function startupNoticeScript(options: { readonly signal: string; readonly text: string }): string
+
+/**
+ * 复制的配置在探针阶段被判不可用时的失败文案。
+ * @param failures - `installProbeFailures` 返回的失败描述。
+ */
+export function copyFailureMessage(failures: readonly string[]): string
+
+/** 回退一次并重试启动时写进日志的那一行。 */
+export const ROLLBACK_RETRY_NOTICE: string
+
+/** 回退后的重试本身失败时写进日志的前缀。 */
+export const ROLLBACK_RETRY_FAILURE: string
+
+/** 回退后给用户看的提示（英文，供官方 locale 表的 `webProfileRolledBack` 接线）。 */
+export const ROLLBACK_NOTICE_EN: string
+
+/** 回退后给用户看的提示（中文）。 */
+export const ROLLBACK_NOTICE_ZH: string

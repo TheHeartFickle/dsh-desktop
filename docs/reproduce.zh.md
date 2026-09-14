@@ -61,7 +61,9 @@
 | R21 | 打包产物（GUI 子系统进程）不产出任何 stdout | win-unpacked 的 exe 没有控制台：`ELECTRON_ENABLE_LOGGING=1` 也不进重定向文件（实测两趟都是 2 字节空日志）。**对策**：改用 `DSH_DESKTOP_DIAGNOSTIC_FILE` 让主进程把启动阶段写进文件；`scripts/smoke-packaged.mjs` 就是按这个判据判通过的 |
 | R22 | 打包产物的启动冒烟怎么判「真的到了应用页」 | 判据两条：① 诊断文件出现 `phase=application-page`（主进程推进到应用页的直接事实；Host 起不来时页面停在 `dsh-app://shell/startup.html`，不会有这一行）② profile 自包含（`package.json`、`pnpm-workspace.yaml`、`node_modules`、`desktop-runtime-state.json` 都在）。**实测**：冷启动（空 home）~6.4s 到 ready、~7s 到应用页；复用同一 home 的温启动 ~2.5s。本机（Node v24.13.0）复跑又测得：冷启动 ~5.4s 到 ready、~5.8s 到应用页，温启动 ~5.2s（与机器负载相关）。命令：`node scripts/smoke-packaged.mjs [超时秒数]`，日志落 `.cache/runs/packaged-smoke.log`、诊断落 `$DSH_HOME/diagnostic.log` |
 | R23 | 打包产物报「找不到模块」才算到应用页 | `tsdown` 会把 `../local/features/*.mjs` 重写成 `lib/local/features/*.mjs`，所以 ① `tsdown.config.ts` 要把**运行期**用到的功能层文件列进 `deps.neverBundle`（当前是 `profile-recovery.mjs` 与 `diagnostics.mjs` 两个）② `electron-builder.config.mjs` 的 `files` 要加 `local/features/*.mjs`。少任何一条，打包产物会因为解析不到功能层而直接落到启动页。**已知状态**：功能层还有两个只被构建脚本 import 的文件（`build-cache.mjs`、`tarball.mjs`），不在 `neverBundle` 里；实测 `tarball.mjs` 会作为独立文件出现在 `app.asar`（`\local\features\tarball.mjs`），`build-cache.mjs` 不出现。二者都不被运行期代码 import，所以只是多带约 3KB，不影响启动。新增**运行期**功能层文件时必须同步登记 `neverBundle`，否则 `build:lib` 报 `[UNRESOLVED_IMPORT]` |
-| R24 | 阶段 4 的复制/回退怎么在无 web profile 的机器上验证 | web profile 不存在时功能层直接跳过（返回 null），所以 `$DSH_HOME/profiles/web` 缺失的机器上行为等价于「没定制」。要验证复制路径得自造 web profile 夹具（`package.json` + `pnpm-workspace.yaml`），`src/features/profile-recovery.test.mjs` 覆盖了配置语义与重试边界，接线层由官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例覆盖 |
+| R24 | 阶段 4 的复制/回退怎么在无 web profile 的机器上验证 | web profile 不存在时功能层直接跳过（返回 null），所以 `$DSH_HOME/profiles/web` 缺失的机器上行为等价于「没定制」。要验证复制路径得自造 web profile 夹具（`package.json` + `pnpm-workspace.yaml`），`src/features/profile-recovery.test.mjs` 覆盖了配置语义与重试边界，接线层由官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例覆盖。**2026-09-14 在打包产物上实跑通三条**：① 冷启动（home 里只有 `profiles/web`）→ 官方 profile 被建出来 → 复制 → `pnpm install` → 到应用页；② 插件能装、探针也过、但 Host 起不来（实例：`dsh-whale-widget` 等 `webServer` 服务，桌面端不提供）→ 回退一次 + 重装 → 重试到应用页 + toast；③ 包根本装不出来（不存在的包名）→ `pnpm install` 报 `ERR_PNPM_FETCH_404` → 回退到官方空 profile，应用停在启动页显示诊断，profile 不留砖 |
+| R25 | 打包产物上怎么读到启动页真实显示的报错 | GUI 子系统进程没有 stdout（R21），但可以给 exe 传 `--remote-debugging-port=<port>`：`fetch('http://127.0.0.1:<port>/json/list')` 里找 `dsh-app://shell/startup.html` 那个 target，连它的 `webSocketDebuggerUrl`，用 `Runtime.evaluate` 读 `#title` / `#error` 的 `textContent`。实测据此抓到 `dsh desktop: plugin tree failed to load … pending (waiting for service: webServer)`。注意报错只在页面上停留一两秒（回退重试会把它顶掉），轮询间隔取 250ms 左右 |
+| R26 | 复制过来的 web 插件为什么起不来 | 最典型的一类是**只在 web 组合里成立**的插件：它 `inject` 或等待 `webServer` 这类 Desktop 不提供的服务，于是 Host 报 `plugin tree failed to load … pending (waiting for service: webServer)`。这不是复制链路的缺陷（清单、安装、探针都过了），属于 design 的「插件兼容性校验的能力边界」里「运行时服务/API 变化」那一行——只有真正 boot 才暴露，由快照回退兜底（R24 的第 ② 条）。`docs/desktop-guide.zh.md` 的「已知限制」也记了桌面端不提供 `webServer` |
 
 ## 3. 复刻命令
 
@@ -80,6 +82,7 @@ cd deepseek-harness && pnpm install --frozen-lockfile
 ```bash
 cd <仓库根>
 node scripts/build.mjs           # 读配置 → 校验提交 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
+npm run apply                    # 同上，但在「打 patch」之后停下（第 1–5 步），不执行构建指令
 ```
 
 流程的每一步都以 `src/build.config.json` 为准：
@@ -224,7 +227,7 @@ pnpm install --frozen-lockfile
 | 功能层（进程内） | 纯函数单测（`node --test`，显式路径），不依赖 Electron 与官方代码 |
 | 功能层（tarball 读取） | 拿 `packed/` 里的真实 tarball 逐一双跑「外部 `tar -tzf` / `tar -xOzf`」与进程内 `listTarballEntries` / `readTarballManifest`，断言条目列表与 manifest 完全一致（实测 277/277），再比 `desktop-packages.json` 的 sha256 不变 |
 | 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM 按接线顺序跑两个经典脚本，断言插入位置、可见性切换、「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
-| patch 层 | `git apply --check` + 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了启动页再跑官方 `apps/desktop/tests/startup-renderer.spec.ts`（`node_modules/.bin/vitest run <路径>`，实测 8/8 通过） |
+| patch 层 | `git apply --check` + 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了启动页或接线再跑官方用例：在**源仓库根**执行 `node_modules/.bin/vitest run apps/desktop/tests/startup-renderer.spec.ts apps/desktop/tests/main-startup.spec.ts`（**实测 25/25**：渲染 8 + 主进程接线 17；在 `apps/desktop` 目录里跑会因 include 规则匹配不到而报 `No test files found`） |
 | 加载动画（视觉） | dev 模式 + R20 的 inspector 读法：`naturalWidth` 证明图片解码、`animationName`/两次 `transform` 证明 CSS 动画在跑、`styleElements`/`style` 属性为 0 证明没碰内联样式 |
 | 阶段 4（复制 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（16 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退三步、探针失败与重试边界）+ 官方 `apps/desktop/tests/main-startup.spec.ts` 的 4 个新用例（接线顺序、放弃复制、回退一次后停手、诊断上页） |
 | 阶段 5（诊断规则，功能层） | `src/features/diagnostics.test.mjs`（7 例：每条规则命中上游真实错误串、阶段不串、覆盖表一致、未命中返回 null、AggregateError 展开、不可恢复提示、格式化保留原始串） |

@@ -4,7 +4,7 @@
  * 官方已有的错误出口是「启动页 + `desktopErrorState(error).message`」（决策 9：不弹原生框）。本层在它
  * 之上补一层人能读懂的判断：把原始错误串归到**一个**阶段，并给出该阶段可执行的下一步。
  *
- * 三条约束（与 design 第 5.2 节一致）：
+ * 三条约束（与 `docs/design.zh.md` 的「阶段 4/5 功能」一致）：
  * 1. **按阶段分组**：组内是同一个失败面的规则，阶段标题即该失败面。
  * 2. **规则互不可见**：每条规则只看错误串与上下文，不引用其他规则、不做跨阶段归因。
  * 3. **首因原则**：只报第一个命中的阶段；没有命中就返回 null，调用方照常显示原始错误。
@@ -12,6 +12,8 @@
  * 为什么规则基于上游**实际**错误串：官方架构固定了运行时的版本与安装路径，环境层与依赖层已经消失，
  * 剩下的失败面集中在这些错误串上；凭空造规则只会误诊。规则失配时返回 null（退回原始错误），不会猜。
  */
+
+import { appendFileSync } from 'node:fs'
 
 /** 诊断所需的上下文，全部来自调用方已经解析好的事实。 */
 const STAGE = Object.freeze({
@@ -113,3 +115,41 @@ export function formatDiagnosis(diagnosis) {
 export const DIAGNOSTIC_RULES = Object.freeze(
   Object.fromEntries(Object.entries(RULES).map(([stage, rules]) => [stage, rules.map(rule => rule.id)])),
 )
+
+/** 主进程记录启动阶段用的环境变量；只有被显式设置时才写文件。 */
+export const DIAGNOSTIC_FILE_ENV = 'DSH_DESKTOP_DIAGNOSTIC_FILE'
+
+/** 到达应用页这一阶段的标记名（冒烟脚本按 `phase=<名>` 匹配，改动即破坏判据）。 */
+export const APPLICATION_PAGE_PHASE = 'application-page'
+
+/**
+ * 把一次启动阶段追加进诊断文件。
+ *
+ * 打包产物是 GUI 进程、没有 stdout（R21），冒烟只能看这个文件：所以**行格式、要读哪个环境变量、
+ * 写失败怎么兜底**全在本层，patch 只负责在阶段变化时调一次。
+ * @param environment - 进程环境（传 `process.env`）。
+ * @param phase - 官方状态名；到达应用页时用 `APPLICATION_PAGE_PHASE`。
+ */
+export function recordStartupPhase(environment, phase) {
+  const file = environment[DIAGNOSTIC_FILE_ENV]
+  if (file === undefined || file === '') return
+  try {
+    appendFileSync(file, `${new Date().toISOString()} phase=${phase}\n`)
+  } catch (error) {
+    console.error('dsh desktop: diagnostic file is not writable', error)
+  }
+}
+
+/**
+ * 官方错误出口要显示的状态：命中诊断就用「阶段标题 + 下一步 + 原始串」，没有命中就照官方原样显示
+ * （诊断只做加法，不挡真相）。
+ *
+ * 官方那个 `desktopErrorState` 由调用方经 `fallback` 注入 —— 功能层不依赖官方实现（依赖方向不可逆）。
+ * @param error - 捕获到的失败。
+ * @param options - `profileRecovery` 事实，以及官方的兜底读取器。
+ * @returns 官方启动页用的错误状态。
+ */
+export function startupErrorState(error, options) {
+  const diagnosis = diagnoseStartupFailure(error, { profileRecovery: options.profileRecovery })
+  return diagnosis === null ? options.fallback(error) : { phase: 'error', message: formatDiagnosis(diagnosis) }
+}

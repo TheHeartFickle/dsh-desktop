@@ -11,7 +11,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import vm from 'node:vm'
 import {
-  applyWebProfileCopy, installProbeFailures, rollbackProfile, snapshotProfile, startupNoticeScript,
+  applyWebProfileCopy, copyFailureMessage, installProbeFailures, rollbackProfile, ROLLBACK_RETRY_FAILURE,
+  ROLLBACK_NOTICE_EN, ROLLBACK_NOTICE_ZH, ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript,
   webProfileCopyChanged, webProfileCopyPlan,
 } from './profile-recovery.mjs'
 
@@ -270,4 +271,19 @@ test('startupNoticeScript：在假 DOM 里插入带信号与文案的元素，�
   const remaining = document.body.children.filter(child => child.id === 'dsh-desktop-notice')
   assert.equal(remaining.length, 1)
   assert.equal(remaining[0].removed, undefined)
+})
+
+test('探针失败文案与回退日志文案由本层决定（patch 里不许出现文案）', () => {
+  assert.equal(
+    copyFailureMessage(['broken-plugin: missing settingsNamespace export', 'other-plugin: no loadable entry']),
+    'dsh desktop: copied web profile plugins could not be loaded:\n'
+      + 'broken-plugin: missing settingsNamespace export\nother-plugin: no loadable entry',
+  )
+  assert.equal(ROLLBACK_RETRY_NOTICE, 'dsh desktop: rolled the profile back to the pre-copy configuration; retrying once')
+  assert.equal(ROLLBACK_RETRY_FAILURE, 'dsh desktop: retry after profile rollback failed')
+})
+
+test('用户可见的回退提示也在本层（官方 locale 表只做接线）', () => {
+  assert.equal(ROLLBACK_NOTICE_EN.startsWith('The previous start failed.'), true)
+  assert.equal(ROLLBACK_NOTICE_ZH.startsWith('上次启动失败'), true)
 })

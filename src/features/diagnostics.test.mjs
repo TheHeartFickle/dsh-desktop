@@ -7,8 +7,14 @@
  * 3. 未命中返回 null，调用方照常显示原始错误。
  */
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
-import { DIAGNOSTIC_RULES, diagnoseStartupFailure, formatDiagnosis } from './diagnostics.mjs'
+import {
+  APPLICATION_PAGE_PHASE, DIAGNOSTIC_FILE_ENV, DIAGNOSTIC_RULES, diagnoseStartupFailure, formatDiagnosis,
+  recordStartupPhase, startupErrorState,
+} from './diagnostics.mjs'
 
 /** 每条规则一个上游真实错误串（来源见 diagnostics.mjs 注释）。 */
 const SAMPLES = [
@@ -87,4 +93,37 @@ test('formatDiagnosis 保留原始错误串，便于对照日志', () => {
   assert.match(text, /profile 与插件图失败/u)
   assert.match(text, /desktop project: active profile is not installed/u)
   assert.ok(text.startsWith(diagnosis.title))
+})
+
+test('诊断文件的行格式、环境变量名与写失败兜底都在本层', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'diagnostics-test-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const file = join(root, 'diagnostic.log')
+
+  recordStartupPhase({}, 'starting')                       // 没设环境变量：完全不写
+  assert.equal(existsSync(file), false)
+
+  recordStartupPhase({ [DIAGNOSTIC_FILE_ENV]: file }, 'starting')
+  recordStartupPhase({ [DIAGNOSTIC_FILE_ENV]: file }, APPLICATION_PAGE_PHASE)
+  const lines = readFileSync(file, 'utf8').trimEnd().split('\n')
+  assert.equal(lines.length, 2)
+  assert.match(lines[0], /^\d{4}-\d\d-\d\dT[\d:.]+Z phase=starting$/)
+  assert.equal(lines[1].endsWith(`phase=${APPLICATION_PAGE_PHASE}`), true)
+
+  const logged = []
+  const original = console.error
+  console.error = (...args) => { logged.push(args) }        // 写不进去（路径是目录）只记日志、不抛
+  try { recordStartupPhase({ [DIAGNOSTIC_FILE_ENV]: root }, 'starting') } finally { console.error = original }
+  assert.equal(logged.length, 1)
+})
+
+test('错误出口：命中诊断走诊断文本，没命中退回官方原样', () => {
+  const fallback = error => ({ phase: 'error', message: `官方: ${String(error)}` })
+  const hit = startupErrorState(new Error('desktop project: active profile is not installed'), { profileRecovery: true, fallback })
+  assert.equal(hit.phase, 'error')
+  assert.match(hit.message, /profile 与插件图失败/)
+  assert.match(hit.message, /desktop project: active profile is not installed/)
+
+  const missed = startupErrorState(new Error('完全没见过的失败'), { profileRecovery: true, fallback })
+  assert.equal(missed.message, '官方: Error: 完全没见过的失败')
 })

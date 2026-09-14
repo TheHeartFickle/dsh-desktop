@@ -228,9 +228,9 @@
 
 | 项 | 状态 |
 |---|---|
-| todo 4.3 诊断链端到端验证 | 脚本与前提代码均已就绪，**只差一次实跑**；卡在单实例锁（需无旧实例，R26） |
-| todo 5.4 规划文件去留 | 未决定 |
-| 适配层独立测试 | 缺（已在文档如实标注，尚未补） |
+| todo 4.3 诊断链端到端验证 | **已作废**（后续会话）：该行为由 `diagnostics.test.mjs` 与官方 `main-startup.spec.ts` 的接线用例覆盖；为它加的前提代码与 `scripts/verify-diagnosis.mjs` 均已删除。原判断「只差一次实跑」随之不再成立 |
+| todo 5.4 规划文件去留 | **已定**（Session 9）：放 `docs/session/`，四份均已入库 |
+| 适配层独立测试 | 缺（已在文档如实标注，尚未补）—— 清单现有**唯一欠项** |
 
 ## Session 8 — 规范修订（结果：一半作废）
 
@@ -307,3 +307,139 @@
 ### 验证
 
 `AGENTS.md` 小节结构与围栏配对正常；仓库根仍只有 `README.md` 与 `AGENTS.md`。
+
+## Session 11 — 清点「文档里还有哪些功能没实现」
+
+### 触发
+
+用户：「现在还有哪些文档中的功能没有实现」——需要对着代码逐条核，而不是复述 design 的[当前状态](../design.zh.md#3-当前状态)表。
+
+### 核对结果
+
+`docs/design.zh.md` 的[构建脚本时间优化](../design.zh.md#41-构建脚本时间优化已实施)与[阶段 4/5 功能](../design.zh.md#42-阶段-45-功能)两张表**逐条都有对应实现**，没有「设计了但没写」的功能行。
+未落地的只有三类，且都不是漏做：① 适配层无独立测试（reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)已如实标注，是唯一欠项）；
+② 明确决定不做（`prepare:packages` / `prepare:runtime` 不接缓存、Electron 自带文件树不逐字节复核）；
+③ 设计上不覆盖（插件兼容性校验的能力边界，由快照回退兜底）。
+
+### 改了什么（都是文档与注释的过时陈述，不是功能）
+
+| 文件 | 改动 |
+|---|---|
+| `docs/session/todo-list.md` | 顶部实测表：单测数 57 → **51**（作废 4.3 时删了它那 6 例）、覆盖对象「6 份」→「5 份」；4.3 行删掉「脚本已写 `scripts/verify-diagnosis.mjs`、尚未实跑」的过时说法；「仍欠」段改为只剩适配层独立测试一项，并写明其余「未做」条目的性质 |
+| `docs/session/progress.md` | Session 7 的「当前仍未完成」表就地标注 4.3 已作废、5.4 已定；本条记录 |
+| `src/features/diagnostics.mjs` | 头注释的「design 第 5.2 节」失效（design 已重编号），改为按小标题引用「阶段 4/5 功能」 |
+| `docs/reproduce.zh.md` | 「验证方式」patch 层一行的 vitest 命令写错（在 `apps/desktop` 里跑会因 include 规则匹配不到而报 `No test files found`），改为在源仓库根跑两个 spec 并记实测 25/25 |
+
+### 验证（功能层）
+
+`node --test "src/**/*.test.mjs"` → **51 pass / 0 fail**。诊断注释为纯注释改动，未重跑构建。
+
+### 接着实测：打包产物到底能不能跑出这些功能
+
+用户追问「所以现在构建的桌面端能不能实现文档中设计的功能」。这次不转述文档，直接取证：
+
+| 证据 | 结果 |
+|---|---|
+| 官方接线用例（源仓库根 `vitest run apps/desktop/tests/{startup-renderer,main-startup}.spec.ts`） | **25/25 通过**（渲染 8 + 主进程接线 17，含本地新增的 4 例） |
+| 产物内实物（直接解析 `win-unpacked/resources/app.asar`） | `local/features/` 5 个文件、`renderer/loading-art.{js,css,png}`、`startup-page.js`、`startup.html`（3 个 script / 2 个 link、无 `unsafe-inline`）、`lib/main.js` 含 `diagnoseStartupFailure`/`copyWebProfile`/`rollbackProfile`/`snapshotProfile`/`startupNoticeScript`/`recordPhase` 等全部调用点 |
+| 冒烟（隔离 home） | 到达应用页（`phase=starting → ready → application-page`） |
+
+**但用真实 web profile 夹具跑，发现「复制 web 配置」这条路根本走不通（打包产物上实测）：**
+
+| 情形 | 结果 |
+|---|---|
+| 冷（`profiles/desktop` 不存在 + `profiles/web` 有第三方插件 —— design 写明的触发条件） | `profiles/desktop` 连目录都没建；诊断只有 `phase=error`；永远不到应用页 |
+| 温（`profiles/desktop` 已存在、插件没装过） | 配置**确实写进去了**（`package.json` 的 `dependencies`/bundles、`pnpm-workspace.yaml` 的 `allowBuilds` 按行合并都可验）；但 `node_modules` 与 lockfile 时间戳仍是启动前的 —— **没有任何一步真正安装新依赖** → 紧接着的图校验失败 → 启动失败 |
+
+根因（读官方 `project-manager.ts` 确认）：`copyWebProfile` 写完 manifest 就调 `ensureProfilePackages()`，而它走的是
+`reconcileProfile(projectDir, state, packagesChanged=true)` —— 该分支只做 `prepareProfile`（链接 + `validateDesktopPluginGraph`）
+与 `pnpm rebuild --pending`，**不跑 `pnpm install`**。官方这条路径的前提是「调用方已经 `pnpm add` 过」（官方 `plugin-add` 正是自己装的），
+而功能层是直接写文件，于是 profile 的清单指向一个没装的包。
+
+**连带后果（实测）：设计的「回退一次」也不触发。** 失败后 `profiles/desktop/package.json` 仍是复制后的内容（未还原成快照）。
+代码层原因：回退只挂在两个触发点 —— `copyWebProfile` 内的「探针失败」与 backend controller 订阅回调里的「报 error」；
+而这里的失败发生在 `ensureProfilePackages()`，它在探针之前、`backend.start()` 之前，controller 从没启动过、不发状态，
+`showStartupError()` 末尾那次 `publishBackend()` 也不触发回退。这是 design 的接线点表**没覆盖的第三条失败路径**。
+「回退提示 toast」同理从未触发（它只在回退后成功进入应用页时注入）。
+
+> 本机用户的 `~/.dsh/profiles/web` 有 13 个第三方插件（含 4 个 git 依赖），所以这条路径在真机上会被触发，不是理论问题。
+
+### 修复（同会话）
+
+先查清官方冷启动由谁装包：`applyRelease()` 在「没有 runtime state」时用 `createPluginProfile()` 建 profile，
+再由 `prepareProfile()` 只做**宿主包链接**（junction 到随包发行的 runtime）——所以没有第三方依赖时根本不跑 pnpm；
+真装包只发生在插件窗口那条路（`applyMutation('plugin-add')` 自己 `pnpm add`）。复制流程两条都不走，这就是缺口的来源。
+
+三处改动（全在 patch 层，没有新文件、没有新依赖）：
+
+| 位置 | 改动 |
+|---|---|
+| `patch/project-manager.ts.patch` | 新增 `ensureProfileDirectory()`：清单不存在就 `createPluginProfile()`，让复制永远落在官方形态的 profile 上 |
+| 同上 | `ensureProfilePackages()` 从「只重建不安装」改成真装：`unlinkDesktopHostPackages` → `removeOwnedDirectory(node_modules)` → `runPnpm(['install','--ignore-scripts'])` → `finishPackageOperation`（即官方重建分支的原样序列，只是不带 `--frozen-lockfile`，因为清单是手写的、lockfile 必然不同步） |
+| `patch/main.ts.patch` | 复制前先 `ensureProfileDirectory`；把「装包失败」并入已有的回退分支（复制成功后的任何失败都回退），否则装包一失败 profile 就永久停在「清单指着没装的包」 |
+| `patch/main-startup.spec.ts.patch` | 替身 manager 补 `ensureProfileDirectory`，并把 3 处 `featureCalls` 顺序断言改为以 `ensure-directory` 打头（新增的顺序本身成了断言） |
+
+**验证**（都在本机实跑）：
+
+| 项 | 结果 |
+|---|---|
+| `git apply --check`（干净 checkout） | **14/14** |
+| 完整构建 | **EXIT=0**；缓存决策 3 miss（`build-official` / `prepare-dsh` / `package-dir`，改了 patch 的预期） |
+| 官方接线用例 | `vitest run apps/desktop/tests/{startup-renderer,main-startup}.spec.ts` → **25/25** |
+| 打包产物 · 冷启动夹具（home 里只有 `profiles/web`） | 到应用页；profile 自包含；`pnpm-lock.yaml` 已生成 |
+| 打包产物 · 插件能装但 Host 起不来（`dsh-whale-widget`） | `starting → error → 回退 → 重试 → ready → application-page`；profile 被还原成官方空 profile（回来的 `package.json` 里 `dependencies: {}`） |
+| 打包产物 · 包装不出来（不存在的包名） | `ERR_PNPM_FETCH_404` → 回退 → 官方空 profile 复原；应用停在启动页显示「包管理缓存失败 + 原始错误串」；**不留砖** |
+
+顺带确定了两件事：
+
+1. **`dsh-whale-widget` 起不来与复制链路无关**：用 CDP 读到启动页原文是
+   `dsh desktop: plugin tree failed to load: … dsh-whale-widget: pending (waiting for service: webServer)` ——
+   它等的是桌面端不提供的 `webServer`（`docs/desktop-guide.zh.md` 的「已知限制」记过）。这正是 design 的
+   「插件兼容性校验的能力边界」里「运行时服务/API 变化」那行：只有真正 boot 才暴露，由快照回退兜底。
+   读法记进了 reproduce 的 R25，这一类失败记进 R26。
+2. 本机 `~/.dsh/profiles/web` 的 13 个插件里，`dsh-whale-widget` 这类**只在 web 组合成立**的插件会被复制过来、
+   装好、探针通过，然后在 boot 时被回退。机制是对的，但「哪些插件值得搬」是内容问题，不是链路问题。
+
+**已知未处理**：装包失败的诊断落在「包管理缓存失败」阶段（`ERR_PNPM_FETCH_404` 命中了 store 组的宽模式），
+标题与「包不存在」这件事不匹配。原始错误串照常显示（诊断只做加法），但要修得先有更多真实错误串样本，没有直接改。
+
+## Session 12 — 规范复核：patch 层只留调度
+
+### 触发
+
+用户问「`src/patch/main.ts.patch` 这种文件里面有大量逻辑，是否违反规范」。按 design 的[patch 层的边界](../design.zh.md#1-三层)（
+判据：这段代码在决定**什么**，还是决定**何时/按什么顺序**）逐行过了一遍：**5 处真违规** ——
+探针失败文案、两条回退日志文案、诊断文件行格式（含环境变量名与阶段名）、写诊断文件失败的文案、
+`diagnosis === null ? … : …` 这条「没命中就退回官方原文」的判断。此外 design 里那句
+「它调度的每个判断都来自功能层」当时**不成立**。
+
+### 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `profile-recovery.mjs` / `.d.mts` | 新增 `copyFailureMessage()`、`ROLLBACK_RETRY_NOTICE`、`ROLLBACK_RETRY_FAILURE`、`ROLLBACK_NOTICE_EN`、`ROLLBACK_NOTICE_ZH` |
+| `diagnostics.mjs` / `.d.mts` | 新增 `DIAGNOSTIC_FILE_ENV`、`APPLICATION_PAGE_PHASE`、`recordStartupPhase()`、`startupErrorState()`（官方 `desktopErrorState` 经 `fallback` 回调注入，功能层不依赖官方） |
+| `patch/main.ts.patch` | 上述五处只剩调用；189 → 174 行（新增 +110 行） |
+| `patch/locale.ts.patch` | 两句用户可见提示挪进功能层，patch 只剩 import 与 `webProfileRolledBack: ROLLBACK_NOTICE_*` 赋值 |
+| `patch/main-startup.spec.ts.patch` | 替身改用 `importOriginal` 展开真实模块（不再复制文案字面值）；diagnostics 替身删掉，直接用真模块 |
+| `docs/design.zh.md` | 行数改对（`main.ts.patch` 现有 +110 行）—— 改完之后那句「每个判断都来自功能层」才成立 |
+
+**有意保留的两处**（都已如实记录，不假装合规）：`project-manager.ts.patch` 的
+`desktop project: restored profile is missing its configuration files`、`pack.ts.patch` 的
+`` `${member.name} produced no tarball at ${tarball}` `` —— 官方文件内部报告守卫失败的错误串，
+同文件上游有成百条同型串，诊断规则就拿它们当语料；用户明确要求不改 `AGENTS.md`，所以不给它开例外、也不硬挪。
+
+### 同时加的入口
+
+`package.json` 增 `"apply": "node scripts/build.mjs --apply-only"`（`build.mjs` 支持 `--apply-only`：
+第 1–5 步逐字相同，第 5 步之后停下，不执行 `build[]` 的构建指令）。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `node --test "src/**/*.test.mjs"` | **55 pass / 0 fail**（新增 4 例：探针失败文案、用户可见提示、诊断文件行格式与写失败兜底、错误出口命中/退回） |
+| `npm run apply` | **14/14** patch 应用成功 |
+| 官方接线用例 `vitest run main-startup + startup-renderer` | **25/25**（这次 diagnostics 用真模块、notice 文案来自真功能层） |
+| `tsc -b apps/desktop/tsconfig.json`（`build:official` 的同一支类型闸门） | **EXIT=0** |
+| 打包产物 + 冒烟 | **未重跑**：完整构建在本会话被环境杀掉两次（前台与后台各一次），日志停在「构建日志 …」那一步；类型闸门与接线用例已过，但「产物仍能起到应用页」这一条没有本次证据 |

@@ -38,3 +38,29 @@ export function formatDiagnosis(diagnosis: DesktopDiagnosis): string
 
 /** 规则表：阶段 → 规则 id，供单测覆盖与文档校对。 */
 export const DIAGNOSTIC_RULES: Readonly<Record<string, readonly string[]>>
+
+/** 主进程记录启动阶段用的环境变量名。 */
+export const DIAGNOSTIC_FILE_ENV: string
+
+/** 到达应用页这一阶段的标记名。 */
+export const APPLICATION_PAGE_PHASE: string
+
+/**
+ * 把一次启动阶段追加进诊断文件（行格式与写失败兜底都在本层）。
+ * @param environment - 进程环境。
+ * @param phase - 官方状态名，或 `APPLICATION_PAGE_PHASE`。
+ */
+export function recordStartupPhase(
+  environment: Record<string, string | undefined>,
+  phase: string,
+): void
+
+/**
+ * 官方错误出口要显示的状态：命中诊断用诊断文本，否则用 `fallback` 给出的官方状态。
+ * @param error - 捕获到的失败。
+ * @param options - `profileRecovery` 事实与官方兜底读取器。
+ */
+export function startupErrorState<T>(
+  error: unknown,
+  options: { readonly profileRecovery: boolean; readonly fallback: (error: unknown) => T },
+): T | { readonly phase: 'error'; readonly message: string }

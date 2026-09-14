@@ -403,3 +403,30 @@ export function startupNoticeScript(options) {
   return true
 })()`
 }
+
+/**
+ * 复制的配置在探针阶段被判不可用时的失败文案。
+ *
+ * 「哪个插件没起来、要不要放弃这份配置」在 `installProbeFailures` 与调用方那里已经判完；本函数只决定
+ * 这句话长什么样 —— 文案属于本层，patch 里不许出现。
+ * @param failures - `installProbeFailures` 返回的失败描述列表。
+ * @returns 交给官方错误出口的消息。
+ */
+export function copyFailureMessage(failures) {
+  return `dsh desktop: copied web profile plugins could not be loaded:\n${failures.join('\n')}`
+}
+
+/** 回退一次并重试启动时写进日志的那一行。 */
+export const ROLLBACK_RETRY_NOTICE = 'dsh desktop: rolled the profile back to the pre-copy configuration; retrying once'
+
+/** 回退后的重试本身失败时写进日志的前缀。 */
+export const ROLLBACK_RETRY_FAILURE = 'dsh desktop: retry after profile rollback failed'
+
+/**
+ * 回退后给用户看的那句提示。官方 locale 表的 `webProfileRolledBack` 条目就是它 —— patch 只做赋值接线，
+ * 「提示什么」在本层。
+ */
+export const ROLLBACK_NOTICE_EN = 'The previous start failed. Desktop restored the configuration from before this start (including the plugins copied from your web profile).'
+
+/** `ROLLBACK_NOTICE_EN` 的中文版。 */
+export const ROLLBACK_NOTICE_ZH = '上次启动失败，已回滚到本次启动之前的配置（含从 web profile 复制来的插件）。'
