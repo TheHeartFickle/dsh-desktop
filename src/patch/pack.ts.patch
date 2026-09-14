@@ -1,8 +1,8 @@
 diff --git a/scripts/release/pack.ts b/scripts/release/pack.ts
-index 6f187e83af..c90bd5c235 100644
+index 6f187e83af..cec5ca12b8 100644
 --- a/scripts/release/pack.ts
 +++ b/scripts/release/pack.ts
-@@ -7,31 +7,59 @@
+@@ -7,32 +7,61 @@
   * ([rationale](../../.agents/notes/implemented/process/2026-08-10-npm-release-sequences.md)).
   */
  
@@ -14,8 +14,10 @@ index 6f187e83af..c90bd5c235 100644
  import { pnpmInvocation } from '../pnpm-invocation.ts'
  import { releaseFamily, tarballName, type ReleaseFamily, type ReleaseMember } from './families.ts'
  import { isEntry, runConcurrent } from './process.ts'
- import { PUBLISH_ORDER_FILE, tarballFiles } from './tarball.ts'
+-import { PUBLISH_ORDER_FILE, tarballFiles } from './tarball.ts'
++import { PUBLISH_ORDER_FILE } from './tarball.ts'
 +import { contentKey, reuse } from '../../apps/desktop/local/features/build-cache.mjs'
++import { listTarballEntries } from '../../apps/desktop/local/features/tarball.mjs'
  
  /** Where pack output lands when `--out` is omitted. */
  const DEFAULT_OUTPUT = 'dist/npm'
@@ -49,6 +51,7 @@ index 6f187e83af..c90bd5c235 100644
    const filename = tarballName(member)
    const tarball = join(destination, filename)
 -  if (!existsSync(tarball)) throw new Error(`${member.name} produced no tarball at ${tarball}`)
+-  family.validatePayload(member, tarballFiles(tarball))
 +  const cacheDirectory = join(destination, '..', PACK_CACHE_DIRECTORY, basename(destination))
 +  const cachedTarball = join(cacheDirectory, filename)
 +  await reuse({
@@ -66,10 +69,11 @@ index 6f187e83af..c90bd5c235 100644
 +  // Single-file publish: `main` owns the destination and rebuilds it before packing, so this needs
 +  // neither `reusePackedDirectory`'s directory clearing nor its multi-file publish.
 +  if (!existsSync(tarball)) copyFileSync(cachedTarball, tarball)
-   family.validatePayload(member, tarballFiles(tarball))
++  family.validatePayload(member, await listTarballEntries(tarball))
    return filename
  }
-@@ -68,6 +96,10 @@ async function main(): Promise<void> {
+ 
+@@ -68,6 +97,10 @@ async function main(): Promise<void> {
    rmSync(destination, { recursive: true, force: true })
    mkdirSync(destination, { recursive: true })
  
@@ -80,7 +84,7 @@ index 6f187e83af..c90bd5c235 100644
    // Members pack in a bounded pool; the recorded publish order stays the
    // members' order regardless of completion order, because each worker writes
    // its result at the member's own position.
-@@ -79,7 +111,7 @@ async function main(): Promise<void> {
+@@ -79,7 +112,7 @@ async function main(): Promise<void> {
        cursor += 1
        const member = members[index]
        if (member === undefined) break

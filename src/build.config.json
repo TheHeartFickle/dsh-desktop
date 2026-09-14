@@ -68,6 +68,10 @@
       "target": "scripts/release/pack.ts"
     },
     {
+      "file": "patch/prepare-package-set.ts.patch",
+      "target": "apps/desktop/scripts/prepare-package-set.ts"
+    },
+    {
       "file": "patch/runtime-payload-smoke.mjs.patch",
       "target": "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs"
     },

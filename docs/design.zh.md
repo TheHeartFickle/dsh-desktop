@@ -4,24 +4,32 @@
 > [探索内容与复刻命令](reproduce.zh.md)（怎么跑、怎么验证、实测到什么）；
 > 上游背景见 [desktop-guide.zh.md](desktop-guide.zh.md)。
 
-在官方 `deepseek-harness` 桌面端之上叠加本地定制。定制 = **独立文件**（适配层 + 功能层）+ **git patch 行插入**（接线）；
+在官方 `deepseek-harness` 桌面端之上叠加本地定制。定制 = **独立文件**（适配层 + 功能层）+ **git patch 接线**（只做任务调度，不实现功能）；
 本仓库的构建脚本按配置把文件复制到指定位置、打上 patch，再进入源仓库执行它自己的构建指令。
 
 ## 1. 三层
 
 ```
-patch 层 ──行插入调用──▶ 功能层(func) ──调用──▶ 适配层 ──固定接口──▶ 官方实现
+patch 层 ──调度已封装能力──▶ 功能层(func) ──调用──▶ 适配层 ──固定接口──▶ 官方实现
 ```
 
 | 层 | 目录 | 职责 | 形态 | 何时修改 |
 |---|---|---|---|---|
 | **适配层** | `src/adaptator/` | 把官方**内部接口**固定成稳定接口：官方内部实现的变动在这一层被吸收，向上返回所需的数据结构 | **独立文件** | 官方内部实现变动时（接口的拼接） |
 | **功能层** | `src/features/` | 功能实现（例：启动前的配置同步页面），以函数封装，只依赖适配层 | **独立文件** | **需求**变动时（否则不修改） |
-| **patch 层** | `src/patch/`（每个目标源文件一个 `<name>.<extension>.patch`） | 用 git 做**行插入**：把已封装好的功能函数插进官方流程的指定位置 | git patch | 每次接线 |
+| **patch 层** | `src/patch/`（每个目标源文件一个 `<name>.<extension>.patch`） | **不实现功能**：只做任务调度与导出修改 —— 把已封装好的能力按顺序接进官方流程，并按官方状态决定何时调度 | git patch | 每次接线 |
 
-**工作模型**：源仓库流程启动 → patch 插入的 `func` 生效（例如同步配置、展示加载动画）→ `func` 退出 →
-控制流回到源仓库原本设计的流程（例如服务器启动）。patch 只回答「在哪个位置插哪一行调用」，
-功能实现一律留在前两层的独立文件里。
+**工作模型**：源仓库流程启动 → patch 调度的 `func` 生效（例如同步配置、展示加载动画）→ `func` 退出 →
+控制流回到源仓库原本设计的流程（例如服务器启动）。
+
+**patch 层的边界**（按变更内容判定，不按行数）：
+
+| patch 层可以有 | patch 层不能有 |
+|---|---|
+| import 功能层函数；**接线状态**（例如「本次回退是否已处理」的标记）；按顺序串接多个调用；按官方状态决定**何时**调度 | **功能本身**：判断该不该跳过、要不要回退、复制哪些文件、提示什么文案、日志行长什么样 |
+
+判据是「这段代码在决定**什么**，还是在决定**何时/按什么顺序**」。前者属功能层，后者属 patch 层。
+所以 patch 可以远多于一行（`main.ts.patch` 现有 +109 行），但它调度的每个判断都来自功能层。
 
 **透明原则**：流程不在乎它处理的是什么。**配置文件、构建脚本、功能代码对这套流程完全透明** ——
 不会因为「这是构建脚本」「这是配置文件」就产生特殊分支或特殊处理。
@@ -39,6 +47,9 @@ desktop/                          ← 本仓库
       build-cache.{mjs,d.mts}     ←   构建缓存（第 5.1 节；注入到构建脚本）
       profile-recovery.{mjs,d.mts}←   复制 web 配置 / 快照回退 / 回退提示（第 5.2 节）
       diagnostics.{mjs,d.mts}     ←   启动失败的阶段化诊断（第 5.2 节）
+      diagnostics-log.{mjs,d.mts} ←   诊断文件的行格式与写入（第 5.2 节）
+      tarball.{mjs,d.mts}         ←   进程内读 tarball，替代逐次 spawn 外部 tar（第 5.1 节）
+      smoke-tolerance.mjs         ←   上游 payload smoke 的检查项容忍策略（见 reproduce R6）
       renderer/                   ←   渲染进程部分：经典脚本 + 同源 CSS
     patch/                        ← patch 层：每个目标源文件一个 patch
       build.ts.patch
@@ -49,6 +60,7 @@ desktop/                          ← 本仓库
       pack.ts.patch
       package-target.ts.patch
       prepare-dsh.ts.patch
+      prepare-package-set.ts.patch
       project-manager.ts.patch
       runtime-payload-smoke.mjs.patch
       startup.html.patch
@@ -57,10 +69,13 @@ desktop/                          ← 本仓库
   scripts/
     build.mjs                     ← 构建入口：读配置 → 校验 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
     smoke-packaged.mjs            ← 打包产物启动冒烟（隔离 DSH_HOME + 诊断文件判据，第 6 节/R22）
+    verify-diagnosis.mjs          ← 诊断链验证：破坏 profile 后核对启动页文案（第 5.2 节 / R25）
     make-icons.py                 ← 资产生成（与构建流程无关）
   assets/                         ← 静态资源（加载动画图片由 copy 映射进源仓库）
   archive/desktop-legacy/         ← 已归档的早期自研壳
-  docs/
+  docs/                           ← 项目文档（四份，见下）
+    design.zh.md / decisions.zh.md / reproduce.zh.md / desktop-guide.zh.md
+    session/                      ← 探索过程的会话记录（非项目文档；结论以上面四份为准）
 ```
 
 ## 3. 构建流程
@@ -72,7 +87,7 @@ desktop/                          ← 本仓库
 2. 校验源仓库存在且是 git 仓库；配置声明的提交不存在 → 报错退出
 3. 清理工作区，checkout 到配置指定的提交
 4. 按配置的复制映射，把文件复制到指定位置
-5. 按顺序应用配置列出的 git patch（行插入）
+5. 按顺序应用配置列出的 git patch（场景 4 的接线）
 6. 进入源仓库，执行配置里声明的构建指令
 ```
 
@@ -83,7 +98,7 @@ desktop/                          ← 本仓库
   源仓库任何时候都能 `checkout` 到指定提交。上一次构建留下的改动因此不会干扰本次构建，
   流程内不需要「还原」这个独立概念。
 - **第 4 步**：复制目标写在配置里，复制到哪就是哪；不为「保护源仓库整洁」而藏文件或改名。
-- **第 5 步**：patch 只做行插入；插入类补丁失配时 `git apply` 直接报错，无需额外的断言机制。
+- **第 5 步**：patch 不实现功能，只做任务调度与导出修改；补丁失配时 `git apply` 直接报错，无需额外的断言机制。
 - **第 6 步**：构建指令写在配置里，脚本不硬编码任何上游脚本名或参数。
 
 配置的路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
@@ -115,7 +130,7 @@ desktop/                          ← 本仓库
 
 | 项 | 内容 |
 |---|---|
-| 问题 | 源仓库的构建体系没有阶段级跳过：`release:pack` 对 266 个包逐个 `pnpm pack`（串行 0.54s/个）；`prepare:runtime` 每轮重解压；`prepare:dsh` 在干净临时目录里重装 506 个包；`electron-builder` 全量重装配。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`） |
+| 问题 | 源仓库的构建体系没有阶段级跳过：`release:pack` 对 266 个包逐个 `pnpm pack`（串行 0.54s/个）；`prepare:runtime` 每轮重解压；`prepare:dsh` 在干净临时目录里重装 506 个包；`electron-builder` 全量重装配。只有 `tsc -b` 自带增量（project references + `.tsbuildinfo`）。**另有一项与缓存无关的开销**：`scripts/release/tarball.ts` 读 tarball 走外部 `tar` 进程（`capture('tar', […])` → `spawnSync`），而 `pack.ts` 对每个成员、`prepare-package-set.ts` 对每个 tarball 各调一次 —— 单次构建数百个进程，成本与 tarball 大小无关（详见 reproduce 第 4 节） |
 | 目标 | 重复构建的时间显著下降；只改页面/资源类文件时，不重跑编译与打包 |
 | 判据 | ① 连续两次构建，第二次明显快于第一次 ② 只改页面/资源类文件后的构建不触发全量编译 ③ 产物内容正确、可正常启动 |
 | 约束 | 遵守透明原则：**不得**靠外部传入「跳过哪个阶段」的标志；**不得**在流程里为某类文件或某个阶段开特例；优化对「处理的是什么」保持透明 |
@@ -123,6 +138,10 @@ desktop/                          ← 本仓库
 **实现形态**：功能层 `src/features/build-cache.mjs` 提供 `contentKey(inputs)`、`reuse(options)` 与
 `reusePackedDirectory(options)`（三处 `pnpm pack` 共用的「缓存 packed 目录 + 发布到输出目录」语义），
 判断逻辑全在这一层；patch 层只把调用插进上游流程，一处一个目标源文件。
+
+外部 `tar` 那项另由功能层 `src/features/tarball.mjs` 承担：它把「读一个 tarball」实现为进程内调用
+（`readTarballManifest` / `listTarballEntries`，等价于原来的 `tar -xOzf` / `tar -tzf` 输出），
+patch 只把两处调用换成它。放在功能层的原因是「怎么读 tarball」是实现判断，patch 里只允许出现调用。
 
 **缓存契约**（四条，越界即 bug）：
 
@@ -162,6 +181,22 @@ desktop/                          ← 本仓库
 | Host 启动失败（复制成功后） | 回退一次 → 重装 → 重试启动一次；第二次再失败交官方恢复页 |
 | `showStartupError()` | `diagnoseStartupFailure` 命中的阶段标题 + 下一步 + 原始错误串 |
 | 回退后成功进入应用页 | `executeJavaScript` 注入一次自绘 toast |
+
+**启动过程的可观测性**：打包产物是 GUI 进程，没有控制台（`ELECTRON_ENABLE_LOGGING=1` 也测不到可用日志，
+实测是 2 字节空日志）。所以主进程在设置了 `DSH_DESKTOP_DIAGNOSTIC_FILE` 时把启动过程写进该文件，
+未设置时完全不写。每行一个 `<ISO 时间> phase=<阶段>`：
+
+| 行 | 写入时机 | 内容 |
+|---|---|---|
+| `phase=starting` / `phase=ready` / `phase=application-page` | `publishBackend` 记录后端状态 | 只有阶段名，供冒烟判定是否真的推进到应用页 |
+| `phase=error <文案>` | 同上，但状态是失败 | **附上启动页实际渲染的那份文案**（`state.message`，即 `formatDiagnosis` 或 `desktopErrorState` 的结果）；换行压成空格以保持一行 |
+| `phase=error-detail <原始串>` | `showStartupError` 入口 | 未经诊断加工的原始错误串，便于与上一条对照 |
+
+**实现位置**：这些行的格式（时间戳、`detail` 拼接与换行压平）与写盘都在功能层 `src/features/diagnostics-log.mjs`（`formatDiagnosticLine` / `appendDiagnosticLine`）；patch 层只保留「从哪个环境变量取文件、在哪些时机调用」这类接线。这样调整行格式、换存储位置都只改功能层，不必动 patch（此前这两件事直接写在 `main.ts` 的 patch 里，属越界）。
+
+> `phase=error` 带内容的意义：让「启动页到底显示了什么」在没有控制台的情况下**可被程序读取**。
+> 上游启动页把文案写进 `<pre id="error">` 的 `textContent`（`startup.js`：`failed ? state.message : ''`），
+> 与本字段同源，所以读文件等价于读页面。`scripts/verify-diagnosis.mjs` 正是按这个判据验证诊断链。
 
 **复制的是配置语义而非目录**（决策 23）：`package.json` 的 `dependencies`/`overrides`/第三方
 `dsh.profile.bundles` 条目，以及 `pnpm-workspace.yaml` 的 `allowBuilds` 段（按行合并，不整文件照搬）。
