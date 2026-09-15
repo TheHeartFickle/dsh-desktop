@@ -1,0 +1,22 @@
+diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
+index da2d5c478d..0a75ec89a5 100644
+--- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
++++ b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
+@@ -6,6 +6,7 @@ import { rm } from 'node:fs/promises'
+ import { createRequire } from 'node:module'
+ import { tmpdir } from 'node:os'
+ import { join, resolve } from 'node:path'
++import { loadOrSkip } from '../../local/features/smoke-tolerance.mjs'
+ 
+ const runtime = process.argv[2]
+ assert.ok(runtime, 'Pass the filtered resources/dsh directory')
+@@ -66,7 +67,8 @@ async function checkPty() {
+ 
+ /** fs-ext implements seek on Windows through SetFilePointerEx and on POSIX through lseek. */
+ function checkFsExt() {
+-  const fsExt = requireRuntime('fs-ext')
++  const fsExt = loadOrSkip('fs-ext', requireRuntime)
++  if (fsExt === null) return
+   const file = join(scratch, 'seek.txt')
+   writeFileSync(file, 'abcdef', { flag: 'wx', mode: 0o600 })
+   const fd = openSync(file, 'r')

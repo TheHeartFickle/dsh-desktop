@@ -1,0 +1,140 @@
+diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
+index 22c303d2bc..af1a8a5a4f 100644
+--- a/apps/desktop/scripts/package-target.ts
++++ b/apps/desktop/scripts/package-target.ts
+@@ -2,14 +2,17 @@
+ 
+ import { spawn } from 'node:child_process'
+ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
++import { availableParallelism } from 'node:os'
+ import { parseArgs } from 'node:util'
+-import { join, resolve } from 'node:path'
++import { dirname, join, resolve } from 'node:path'
+ import {
+   desktopBuildRecordFilename,
+   resolveDesktopAutoUpdateConfig,
+ } from './desktop-auto-update-environment.mjs'
+ import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
++import { contentKey, reuse, reusePackedDirectory } from '../local/features/build-cache.mjs'
+ import { packageMacOSArtifacts, type DesktopPrepackagedArtifact } from './package-macos.ts'
++import { verifyDesktopRuntime } from '../src/runtime-tree.ts'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
+@@ -27,6 +30,14 @@ const DESKTOP_UPLOAD_CREDENTIAL_ENV_NAMES = new Set([
+   'DOWNLOAD_PROD_COS_SECRET_KEY',
+ ])
+ 
++/**
++ * Members pack in parallel here: local packaging has no credentialed publish ordering to match,
++ * each member packs from its own directory, and the recorded publish order stays the members'
++ * order regardless of completion order. Capped at 8 because the cost is one package-manager
++ * process per member and measured throughput stops improving past that.
++ */
++const PACK_CONCURRENCY = String(Math.min(8, availableParallelism()))
++
+ /** Fixed platform and architecture identifiers exposed by package scripts. */
+ export type DesktopPackageTargetName = 'mac-arm64' | 'mac-x64' | 'win-x64'
+ 
+@@ -288,25 +299,44 @@ async function main(): Promise<void> {
+     if (!invocation.unsigned && process.env[name] !== undefined) electronBuilderEnv[name] = process.env[name]
+   }
+   await runPnpm(['run', 'build:official'], buildEnv, REPOSITORY_ROOT)
+-  await runPnpm(['run', 'release:pack', '--family', 'dsh', '--out', buildPaths.packedDsh], buildEnv, REPOSITORY_ROOT)
+-  await runPnpm([
+-    '--dir',
+-    'apps/desktop-host',
+-    'pack',
+-    '--pack-destination',
+-    buildPaths.packedDsh,
+-  ], buildEnv, REPOSITORY_ROOT)
+-  await runPnpm(['run', 'release:pack', '--family', 'vendor', '--out', buildPaths.packedVendor], buildEnv, REPOSITORY_ROOT)
++  await runPnpm(['run', 'release:pack', '--family', 'dsh', '--out', buildPaths.packedDsh, '--concurrency', PACK_CONCURRENCY], buildEnv, REPOSITORY_ROOT)
++  // The private Host package is packed here rather than by the release packer, so it needs the same
++  // member cache: `pnpm pack` rewrites the packed manifest with a per-run key order, and a fresh
++  // byte each build would change the package set that `prepare:dsh` keys on.
++  const hostPackDirectory = join(buildPaths.packedDsh, '..', '.pack-cache', 'desktop-host', 'packed')
++  await reusePackedDirectory({
++    stage: 'pack-desktop-host',
++    key: contentKey(['apps/desktop-host', 'package.json', 'pnpm-lock.yaml'], { base: REPOSITORY_ROOT }),
++    cacheDirectory: dirname(hostPackDirectory),
++    packedDirectory: hostPackDirectory,
++    destination: buildPaths.packedDsh,
++    produce: () => runPnpm(
++      ['--dir', 'apps/desktop-host', 'pack', '--pack-destination', hostPackDirectory],
++      buildEnv,
++      REPOSITORY_ROOT,
++    ),
++  })
++  await runPnpm(['run', 'release:pack', '--family', 'vendor', '--out', buildPaths.packedVendor, '--concurrency', PACK_CONCURRENCY], buildEnv, REPOSITORY_ROOT)
+   rmSync(buildPaths.packedLandlock, { recursive: true, force: true })
+   mkdirSync(buildPaths.packedLandlock, { recursive: true })
+-  await runPnpm(['--dir', 'native/system', 'run', 'build:ts'], buildEnv, REPOSITORY_ROOT)
+-  await runPnpm([
+-    '--dir',
+-    'native/system/packages/entry',
+-    'pack',
+-    '--pack-destination',
+-    buildPaths.packedLandlock,
+-  ], buildEnv, REPOSITORY_ROOT)
++  // Same member cache for the native entry tarball: its pack is not byte-reproducible either, and a
++  // fresh byte each build would change the package set that `prepare:dsh` keys on.
++  const landlockPackDirectory = join(buildPaths.packedLandlock, '..', '.pack-cache', 'landlock', 'packed')
++  await reusePackedDirectory({
++    stage: 'pack-landlock-entry',
++    key: contentKey(['native/system/packages/entry', 'native/system/package.json', 'pnpm-lock.yaml'], { base: REPOSITORY_ROOT }),
++    cacheDirectory: dirname(landlockPackDirectory),
++    packedDirectory: landlockPackDirectory,
++    destination: buildPaths.packedLandlock,
++    produce: async () => {
++      await runPnpm(['--dir', 'native/system', 'run', 'build:ts'], buildEnv, REPOSITORY_ROOT)
++      await runPnpm(
++        ['--dir', 'native/system/packages/entry', 'pack', '--pack-destination', landlockPackDirectory],
++        buildEnv,
++        REPOSITORY_ROOT,
++      )
++    },
++  })
+   await runPnpm(['run', 'prepare:runtime'], targetEnv)
+   await runPnpm(['run', 'prepare:packages'], targetEnv)
+   await runPnpm(['run', 'prepare:dsh'], targetEnv)
+@@ -322,6 +352,39 @@ async function main(): Promise<void> {
+       artifactsRoot: buildPaths.artifacts,
+       environment: electronBuilderEnv,
+     }, artifact => runPnpm(desktopElectronBuilderArguments(target, false, artifact), electronBuilderEnv))
++  } else if (invocation.directory && invocation.unsigned) {
++    // Only the local unsigned `--dir` path is cacheable: installers, signing and notarization must run.
++    // The key covers everything that decides the assembled product except the Electron distribution
++    // itself (that comes from electron-builder's own cache): the dsh runtime marker alone stands for
++    // the whole dsh tree, because that stage's key already fixes its bytes.
++    const unpacked = join(buildPaths.root, 'unsigned-artifacts', 'win-unpacked')
++    await reuse({
++      stage: `package-dir-${target.name}`,
++      key: contentKey([
++        join(buildPaths.root, 'local-cache', `prepare-dsh-${target.name}.json`),
++        join(buildPaths.runtime),
++        'apps/desktop/electron-builder.config.mjs',
++        'apps/desktop/package.json',
++        'apps/desktop/lib',
++        'apps/desktop/renderer',
++        'pnpm-lock.yaml',
++      ], {
++        base: REPOSITORY_ROOT,
++        extra: `${target.name}\n${process.env.DSH_DESKTOP_APP_ID ?? ''}\n${String(invocation.unsigned)}`,
++      }),
++      marker: join(buildPaths.root, 'local-cache', `package-dir-${target.name}.json`),
++      outputs: [
++        join(unpacked, 'DeepSeek Harness.exe'),
++        join(unpacked, 'resources', 'app.asar'),
++        join(unpacked, 'resources', 'dsh', 'desktop-runtime.json'),
++      ],
++      verify: () => verifyDesktopRuntime(
++        join(unpacked, 'resources', 'dsh'),
++        packageVersion(join(APP_ROOT, 'package.json'), 'desktop package'),
++        target,
++      ),
++      produce: () => runPnpm(desktopElectronBuilderArguments(target, true), electronBuilderEnv),
++    })
+   } else {
+     await runPnpm(desktopElectronBuilderArguments(target, invocation.directory), electronBuilderEnv)
+   }

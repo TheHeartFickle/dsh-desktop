@@ -1,0 +1,21 @@
+diff --git a/apps/desktop/renderer/startup.html b/apps/desktop/renderer/startup.html
+index 098efb4f92..4a9273fc78 100644
+--- a/apps/desktop/renderer/startup.html
++++ b/apps/desktop/renderer/startup.html
+@@ -6,6 +6,7 @@
+     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:">
+     <title id="page-title"></title>
+     <link rel="stylesheet" href="startup.css">
++    <link rel="stylesheet" href="loading-art.css">
+   </head>
+   <body>
+     <main aria-busy="true">
+@@ -21,6 +22,8 @@
+         <button id="reset-configuration" type="button"></button>
+       </div>
+     </main>
++    <script src="startup-page.js"></script>
++    <script src="loading-art.js"></script>
+     <script src="startup.js"></script>
+   </body>
+ </html>

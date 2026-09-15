@@ -1,0 +1,6 @@
+/* 功能层（渲染进程）：启动页加载动画的样式。
+   官方 CSP 是 `style-src 'self'`，所以样式必须待在同源 CSS 文件里，不能内联到 HTML 或脚本里。
+   本文件在 startup.css 之后加载：`[hidden]` 是官方 CSS 的 `display: none !important`，收起状态由它兜住。 */
+#loading-art { display: block; width: 160px; height: 160px; margin: 0 auto 4px; animation: dsh-art-bob 2.4s ease-in-out infinite; }
+@keyframes dsh-art-bob { 50% { transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { #loading-art { animation: none; } }

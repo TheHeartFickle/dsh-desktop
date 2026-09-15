@@ -2,19 +2,11 @@
   "name": "deepseek-harness-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Harness Web GUI desktop shell",
+  "description": "在官方 dsh 桌面端之上叠加本地定制（分层源码 + 上游补丁）",
   "type": "module",
-  "main": "src/main/index.js",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win --x64",
-    "test": "node test/version.test.js && node test/net-utils.test.js"
-  },
-  "devDependencies": {
-    "electron": "43.4.0",
-    "electron-builder": "26.15.3"
-  },
-  "dependencies": {
-    "electron-log": "^5.4.4"
+    "apply": "node scripts/build.mjs --apply-only",
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"src/**/*.test.mjs\""
   }
 }

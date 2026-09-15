@@ -1,0 +1,118 @@
+{
+  "upstream": "deepseek-harness",
+  "upstreamUrl": "https://github.com/deepseek-ai/deepseek-harness.git",
+  "checkout": "c291e7961a515f6d7af9304e7fd1d257929aef26",
+  "copy": [
+    {
+      "from": "adaptator",
+      "to": "apps/desktop/local/adaptator",
+      "exclude": [
+        "*.test.mjs",
+        "renderer"
+      ]
+    },
+    {
+      "from": "features",
+      "to": "apps/desktop/local/features",
+      "exclude": [
+        "*.test.mjs",
+        "renderer"
+      ]
+    },
+    {
+      "from": "adaptator/renderer/startup-page.js",
+      "to": "apps/desktop/renderer/startup-page.js"
+    },
+    {
+      "from": "features/renderer/loading-art.js",
+      "to": "apps/desktop/renderer/loading-art.js"
+    },
+    {
+      "from": "features/renderer/loading-art.css",
+      "to": "apps/desktop/renderer/loading-art.css"
+    },
+    {
+      "from": "../assets/icon.png",
+      "to": "apps/desktop/renderer/loading-art.png"
+    }
+  ],
+  "patches": [
+    {
+      "file": "patch/project-manager.ts.patch",
+      "target": "apps/desktop/src/project-manager.ts"
+    },
+    {
+      "file": "patch/main.ts.patch",
+      "target": "apps/desktop/src/main.ts"
+    },
+    {
+      "file": "patch/tsdown.config.ts.patch",
+      "target": "apps/desktop/tsdown.config.ts"
+    },
+    {
+      "file": "patch/electron-builder.config.mjs.patch",
+      "target": "apps/desktop/electron-builder.config.mjs"
+    },
+    {
+      "file": "patch/build.ts.patch",
+      "target": "scripts/build.ts"
+    },
+    {
+      "file": "patch/prepare-dsh.ts.patch",
+      "target": "apps/desktop/scripts/prepare-dsh.ts"
+    },
+    {
+      "file": "patch/package-target.ts.patch",
+      "target": "apps/desktop/scripts/package-target.ts"
+    },
+    {
+      "file": "patch/pack.ts.patch",
+      "target": "scripts/release/pack.ts"
+    },
+    {
+      "file": "patch/prepare-package-set.ts.patch",
+      "target": "apps/desktop/scripts/prepare-package-set.ts"
+    },
+    {
+      "file": "patch/runtime-payload-smoke.mjs.patch",
+      "target": "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs"
+    },
+    {
+      "file": "patch/startup.html.patch",
+      "target": "apps/desktop/renderer/startup.html"
+    },
+    {
+      "file": "patch/startup.js.patch",
+      "target": "apps/desktop/renderer/startup.js"
+    },
+    {
+      "file": "patch/locale.ts.patch",
+      "target": "apps/desktop/src/locale.ts"
+    },
+    {
+      "file": "patch/main-startup.spec.ts.patch",
+      "target": "apps/desktop/tests/main-startup.spec.ts"
+    }
+  ],
+  "build": [
+    {
+      "cwd": "apps/desktop",
+      "command": [
+        "node",
+        "--experimental-transform-types",
+        "scripts/package-target.ts",
+        "win-x64",
+        "--dir",
+        "--unsigned"
+      ],
+      "ignoreTargets": [
+        "apps/desktop/renderer",
+        "apps/desktop/local"
+      ],
+      "env": {
+        "DSH_DESKTOP_APP_ID": "ai.deepseek.dsh.desktop",
+        "DSH_LOCAL_NPM_REGISTRY": "https://registry.npmmirror.com"
+      }
+    }
+  ]
+}

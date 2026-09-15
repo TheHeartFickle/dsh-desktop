@@ -1,0 +1,6 @@
+# 补丁保持 LF：上游 `.gitattributes` 强制 `eol=lf`，目标文件在工作区也是 LF，行尾无需转换；
+# 本文件所在仓库 `core.autocrlf=true`，不锁会被转成 CRLF
+*.patch -text
+
+# 本文件自身
+.gitattributes -text

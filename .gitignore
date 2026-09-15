@@ -143,3 +143,11 @@ vite.config.ts.timestamp-*
 .vite/
 
 release/
+# 注入状态（apply-local.mjs 运行时写入，不应提交）
+scripts/upstream-patches/.state.json
+
+# dsh 上游源码（内含独立 .git，各机器自行 clone）：物理存在于本目录，但不进入跟踪
+deepseek-harness/
+
+# 构建缓存：保存在仓库内便于统一管理，但不进入跟踪
+.cache/

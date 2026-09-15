@@ -1,0 +1,201 @@
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index a73a6223a5..fa452fdbf0 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1,7 +1,7 @@
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+ 
+ import { readFile, writeFile } from 'node:fs/promises'
+-import { extname, join, normalize, resolve, sep } from 'node:path'
++import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import {
+   app,
+@@ -22,6 +22,12 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+ import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+ import { desktopErrorState } from './startup-error.ts'
+ import { startupFailureDocument } from './startup-document.ts'
++import {
++  applyWebProfileCopy, copyFailureMessage, installProbeFailures, recordMigrationFailure, rollbackProfile,
++  ROLLBACK_RETRY_FAILURE, ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript, webProfileMigration,
++  writeMigrationRecord,
++} from '../local/features/profile-recovery.mjs'
++import { APPLICATION_PAGE_PHASE, recordStartupPhase, startupErrorState } from '../local/features/diagnostics.mjs'
+ 
+ const SCHEME = 'dsh-app'
+ let focusPrimaryWindow = (): void => {}
+@@ -58,6 +64,9 @@ const MIME: Readonly<Record<string, string>> = {
+   '.css': 'text/css; charset=utf-8',
+   '.html': 'text/html; charset=utf-8',
+   '.js': 'text/javascript; charset=utf-8',
++  // Local customization: the loading art is a PNG. Serving it as octet-stream would leave the image
++  // to content sniffing, which an upstream `X-Content-Type-Options: nosniff` would break.
++  '.png': 'image/png',
+   '.svg': 'image/svg+xml',
+ }
+ 
+@@ -153,6 +162,67 @@ async function main(): Promise<void> {
+   const development = app.isPackaged ? undefined : join(app.getAppPath(), '.desktop-build', 'development', 'project')
+   const activeProject = development ?? paths.profile
+   const manager = new DesktopProjectManager(paths, resources)
++  // Local customization (feature layer: apps/desktop/local/features/profile-recovery.mjs). Package
++  // state always changes through the manager; the feature layer owns which files are copied,
++  // snapshotted, and restored, while every rebuild or host-link refresh goes through the manager.
++  const webProfile = join(dirname(paths.profile), 'web')
++  let webProfileBaseline: ReturnType<typeof snapshotProfile> | undefined
++  let copiedProfile = false
++  // Set only for the in-process retry: a copy that succeeds is kept, so the retry neither copies
++  // nor reinstalls again, and a failure after that point is a Host failure like any other.
++  let retryingCopiedProfile = false
++  let rollbackHandled = false
++  /**
++   * Run the one-time web profile migration for this desktop profile. The feature layer decides
++   * whether the window is still open: `skip` for a profile that was already settled, `settle` when
++   * there is nothing to migrate (no web plugins, a profile the user has taken over, or content that
++   * already matches), and `migrate` with the plan otherwise.
++   *
++   * Only packaged runs call this. A development run starts from its own project directory and never
++   * reads the desktop profile, so copying there would create a profile the run does not use.
++   */
++  const copyWebProfile = async (): Promise<void> => {
++    // The migration reads the desktop manifest, so the official profile has to exist first; on a
++    // fresh home this also makes the official empty profile the baseline the snapshot restores.
++    await manager.ensureProfileDirectory(paths.profile)
++    const migration = webProfileMigration({ desktopProfile: paths.profile, webProfile })
++    if (migration.action === 'skip') return
++    if (migration.action === 'settle') {
++      writeMigrationRecord({ profile: paths.profile, status: 'done' })
++      return
++    }
++    const plan = migration.plan
++    const baseline = snapshotProfile({ profile: paths.profile })
++    applyWebProfileCopy(paths.profile, plan)
++    webProfileBaseline = baseline
++    copiedProfile = true
++    // Every failure after the files are written -- installing the new manifest as much as the probe --
++    // means the copied configuration is unusable, and both restore the pre-copy profile. The attempt
++    // is counted, so three consecutive failures stop the retries instead of failing every start.
++    let failures: readonly string[]
++    try {
++      await manager.ensureProfilePackages(paths.profile)
++      failures = installProbeFailures({ profile: paths.profile, plugins: plan.plugins, node: resources.node })
++    } catch (error) {
++      copiedProfile = false
++      await rollbackProfile({
++        profile: paths.profile,
++        snapshot: baseline,
++        onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
++      })
++      recordMigrationFailure({ profile: paths.profile })
++      throw error
++    }
++    if (failures.length === 0) return
++    copiedProfile = false
++    await rollbackProfile({
++      profile: paths.profile,
++      snapshot: baseline,
++      onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
++    })
++    recordMigrationFailure({ profile: paths.profile })
++    throw new Error(copyFailureMessage(failures))
++  }
+   profileRecoveryAvailable = () => development === undefined && manager.canRecoverProfile()
+   let pageError: Extract<DesktopBackendState, { phase: 'error' }> | undefined
+   let quitting = false
+@@ -196,6 +266,7 @@ async function main(): Promise<void> {
+     return state.phase === 'error' ? { ...state, profileRecovery: profileRecoveryAvailable() } : state
+   }
+   const publishBackend = (state: DesktopBackendState): void => {
++    recordStartupPhase(process.env, state.phase)
+     for (const window of BrowserWindow.getAllWindows()) {
+       window.webContents.send(DESKTOP_IPC.backendState, state)
+     }
+@@ -213,9 +284,50 @@ async function main(): Promise<void> {
+   }, (state) => {
+     if (state.phase === 'starting' && !emergencyDocument) pageError = undefined
+     publishBackend(backendState())
+-    if (state.phase === 'error') void navigateMain(startupUrl).catch((error: unknown) => { console.error(error) })
++    if (state.phase === 'error' && !rollbackHandled) {
++      // The controller reports a failure after its own cleanup settles, which can be later than
++      // the startup promise rejecting. Both paths call this guarded retry; only the first acts.
++      void retryAfterRollback()
++    }
+   })
+ 
++  /**
++   * Restore the pre-copy profile after a failed start, rebuild it, and let the caller start once
++   * more. The retry is bounded to one attempt: a restored profile that still fails cannot be fixed
++   * by another rollback, so recovery belongs to the startup page. A Host failure after a migration
++   * means this batch of plugins does not boot here, so the migration is recorded as abandoned and
++   * later starts do not try it again.
++   */
++  const rollbackCopiedProfile = async (): Promise<boolean> => {
++    if (!copiedProfile || rollbackHandled || webProfileBaseline === undefined) return false
++    rollbackHandled = true
++    retryingCopiedProfile = true
++    await rollbackProfile({
++      profile: paths.profile,
++      snapshot: webProfileBaseline,
++      onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
++    })
++    writeMigrationRecord({ profile: paths.profile, status: 'abandoned' })
++    return true
++  }
++
++  let retry: Promise<void> | undefined
++  const retryAfterRollback = (): Promise<void> => {
++    retry ??= Promise.resolve()
++      .then(async () => await rollbackCopiedProfile())
++      .then(async (restored) => {
++        if (!restored) return
++        console.error(ROLLBACK_RETRY_NOTICE)
++        await backend.stop()
++        await reconcileBackend()
++      })
++      .catch((error: unknown) => {
++        console.error(ROLLBACK_RETRY_FAILURE, error)
++      })
++      .finally(() => { retry = undefined })
++    return retry
++  }
++
+   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
+     updateState = state
+     for (const window of BrowserWindow.getAllWindows()) {
+@@ -248,7 +360,8 @@ async function main(): Promise<void> {
+ 
+   const showStartupError = async (error: unknown): Promise<void> => {
+     if (quitting) return
+-    pageError = desktopErrorState(error)
++    // 功能层决定：命中诊断用诊断文本，没命中退回官方原文（诊断只做加法，不挡真相）。
++    pageError = startupErrorState(error, { profileRecovery: profileRecoveryAvailable(), fallback: desktopErrorState })
+     try { await navigateMain(startupUrl) }
+     catch (navigationError) {
+       await showEmergencyError(new AggregateError([error, navigationError], messages.startupFailed))
+@@ -259,12 +372,25 @@ async function main(): Promise<void> {
+     startup ??= (async () => {
+       pageError = undefined
+       await navigateMain(startupUrl)
++      if (development === undefined && !copiedProfile && !rollbackHandled && !retryingCopiedProfile) await copyWebProfile()
++      retryingCopiedProfile = false
+       await backend.start(async () => {
+         if (development === undefined) {
+           await manager.applyRelease()
+         }
+       })
+-      if (backend.host !== undefined) await navigateMain(applicationUrl)
++      if (backend.host !== undefined) {
++        // The migrated configuration booted here: close the one-time migration window.
++        if (copiedProfile && !rollbackHandled) writeMigrationRecord({ profile: paths.profile, status: 'done' })
++        await navigateMain(applicationUrl)
++        recordStartupPhase(process.env, APPLICATION_PAGE_PHASE)
++        const window = mainWindow
++        if (rollbackHandled && window !== undefined && !window.isDestroyed()) {
++          await window.webContents.executeJavaScript(
++            startupNoticeScript({ signal: 'rolled-back', text: messages.webProfileRolledBack }),
++          ).catch(() => undefined)
++        }
++      }
+     })().catch(async (error: unknown) => {
+       await showStartupError(error)
+       throw error

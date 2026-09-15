@@ -1,41 +1,36 @@
 # DeepSeek Harness Desktop
 
-Electron 桌面壳，用于启动并承载 DeepSeek Harness Web GUI。
+在官方 dsh 桌面端（上游 `apps/desktop`）之上叠加本地定制。
 
-它不打包后端：启动时会检测/安装可用的 Node.js 和 `@deepseek-ai/dsh`，
-然后拉起 `dsh web --no-open`，待后端返回真实 boot manifest 后再加载页面。
+定制 = **独立文件**（适配层 + 功能层）+ **git patch 接线**（只做任务调度，不实现功能）。本仓库的构建脚本按 `src/build.config.json`
+把文件复制到指定位置、打上 patch，再进入源仓库执行它自己的构建指令。
 
-## 目录结构
+- 源仓库**不进入本仓库跟踪**：`deepseek-harness/` 内含独立 `.git`，各机器各有一份；缺了由 `build.mjs` 按配置自动取回
+- 源仓库必须始终能 `checkout` 到配置指定的提交 —— 这是唯一硬约束；工作区状态不被保护（见 [docs/decisions.zh.md](docs/decisions.zh.md) 第 2 条）
+- 配置文件、构建脚本、功能代码对这套流程**完全透明**，不为任何一类文件开特例
 
-```text
-assets/                 图标等静态资源
-scripts/                图标生成等开发脚本
-src/main/               Electron 主进程模块（ESM）
-  index.js              入口：组装模块、窗口生命周期、启动流程
-  config.js             常量与环境变量
-  logger.js             文件 + 界面日志
-  net.js                系统代理、下载
-  node.js               Node.js 检测/安装、npm 执行
-  dsh.js                dsh 检测/安装引导
-  backend.js            dsh web 后端进程管理
-  window.js             窗口、加载覆盖层
-  version.js            版本解析纯函数
-  net-utils.js          代理解析纯函数
-src/preload/index.cjs   沙箱 preload（CommonJS）
-src/renderer/loading.html  启动加载页
-test/                   node:test 单测
-```
-
-## 命令
+## 构建
 
 ```bash
-npm start       # 启动桌面端
-npm test        # 运行单测
-npm run dist    # 打包 Windows x64
+cd <仓库根>
+node scripts/build.mjs   # 读配置 → 校验提交 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
 ```
 
-## 说明
+源仓库与它的依赖都不随本仓库同步：`build.mjs` 发现 `deepseek-harness/` 缺失时按 `src/build.config.json` 的
+`upstreamUrl` 自动 clone，发现依赖缺失时自动 `pnpm install --frozen-lockfile`。环境相关的坑（Git Bash 里的 `tar`、
+Electron 二进制镜像、`DSH_HOME` 必须隔离）见 [docs/reproduce.zh.md](docs/reproduce.zh.md)。
+只要把定制落到源仓库、暂不构建，用 `npm run apply`（前五步，到此为止）。
 
-- 主进程使用 ESM（`"type": "module"`）。
-- preload 因沙箱限制保持 CommonJS，文件名为 `index.cjs`。
-- 日志写入可执行文件旁 `logs/`，按天轮转并保留 7 天。
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/design.zh.md](docs/design.zh.md) | 当前设计（是什么、怎么做）：三层职责、构建流程、当前状态、功能设计 |
+| [docs/decisions.zh.md](docs/decisions.zh.md) | 重大决策与原因（为什么） |
+| [docs/reproduce.zh.md](docs/reproduce.zh.md) | 环境事实、踩坑与常用手段、构建缓存的实现与实测、复刻与验证命令 |
+| [docs/desktop-guide.zh.md](docs/desktop-guide.zh.md) | 官方桌面端探索记录（上游背景） |
+
+> 另有探索过程的会话记录，放在 [docs/session/](docs/session/)：
+> [task_plan.md](docs/session/task_plan.md)（任务计划）、[findings.md](docs/session/findings.md)（发现集）、
+> [progress.md](docs/session/progress.md)（会话日志）、[todo-list.md](docs/session/todo-list.md)（待办与实测进度）。
+> 它们是过程记录，**不是项目文档**；结论以 `docs/` 四份为准。
