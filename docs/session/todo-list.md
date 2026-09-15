@@ -13,15 +13,15 @@
 | 0.4 Node 版本 | ✅ 已对齐 | 本机 **v24.13.0**（原文档写 v22.19.0，已按实测改）；走 `>=24.0.0` 分支，满足声明 |
 | 0.5 pnpm / store | ✅ | pnpm **11.7.0**（与 repo 声明一致，pnpm 自管理已切）；store `D:\.pnpm-store\v11` 由 11.7.0 建立，无 R9 冲突 |
 | 0.6 装依赖 | ✅ **已完成** | `pnpm install --frozen-lockfile` **EXIT=0，31.3s**（第一轮的「网络阻塞」是误判） |
-| 1.1 功能层单测 | ✅ | **51 pass / 0 fail / 602ms**（作废 4.3 后删掉其 6 例，由 57 回落） |
-| 1.2 单测覆盖对象 | ✅ | reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表对应的 5 份测试文件均出现在 1.1 输出里 |
+| 1.1 功能层 + 适配层单测 | ✅ | **67 pass / 0 fail**（作废 4.3 后由 57 回落到 51；接线文案 4 例到 55；适配层 `smoke.test.mjs` 4 例到 59；Session 14 迁移记账 8 例到 67） |
+| 1.2 单测覆盖对象 | ✅ | reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表对应的 6 份测试文件均出现在 1.1 输出里（含适配层 `smoke.test.mjs`） |
 | 2.1 patch 校验 | ✅ | **13/13 `git apply --check` 通过**（当时）；新增 `prepare-package-set.ts.patch` 后为 **14/14** |
 | 3.1 冷构建 | ✅ | **EXIT=0**，产物 `unsigned-artifacts/win-unpacked/DeepSeek Harness.exe`（244MB） |
 | 3.2 稳态 + 字节一致性 | ✅ | 稳态 **280 hit / 0 miss**；产物 sha256 跨多次构建逐字节一致；稳态 **49–53s**（修复外部 `tar` 后，见下） |
 | 3.3 定位 `key-changed` | ✅ **已定论** | **不是系统性摆动**：同一方法连跑两次均 280 hit / 0 miss，那次 miss 是一次性异常 |
 | 4.1 冷启动冒烟 | ✅ | 到达应用页 = true，profile 自包含 = true |
 | 4.2 温启动冒烟 | ✅ | 通过（**5.18s** 到 ready，文档称 ~2.5s） |
-| 4.3 诊断链验证 | ❌ 作废 | 该行为已由 `diagnostics.test.mjs`（7 例）与官方 `main-startup.spec.ts` 的接线用例覆盖；为它而加的前提代码与 `scripts/verify-diagnosis.mjs` 已全部删除 |
+| 4.3 诊断链验证 | ❌ 作废 | 该行为已由 `diagnostics.test.mjs`（9 例）与官方 `main-startup.spec.ts` 的接线用例覆盖；为它而加的前提代码与 `scripts/verify-diagnosis.mjs` 已全部删除 |
 | 5.1 历史完整性 | ✅ | HEAD 仍为 `c291e7961a…` |
 | 5.2 文档数字核对 | ✅ | design 第 4.1/4.2 节、reproduce 第 4/6 节与 R23 已按实测改；未改 decisions 17/22 与历史性能表 |
 | 5.3 文档路径 | ✅ 已修 | README 1 处 + reproduce 6 处（含 §3.3 的 2 处）已改为仓库根相对路径 |
@@ -119,10 +119,10 @@ cd $U && pnpm install --frozen-lockfile
 ```bash
 cd $R && node --test "src/**/*.test.mjs"
 ```
-验证：`# fail 0`。本机实测基线：**51 pass / 602ms**（曾为 57；作废 4.3 时删掉了它那 6 例，是有依据的下降）。数字再下降 = 有测试被删或漏跑。
+验证：`# fail 0`。本机实测基线：**67 pass**（作废 4.3 时由 57 回落到 51；接线文案到 55；Session 13 补适配层 `smoke.test.mjs` 到 59；Session 14 补迁移记账 8 例到 67）。数字再下降 = 有测试被删或漏跑。
 
 - [x] **1.2 逐条确认单测覆盖了文档声称的对象**（reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)表）
-验证：`build-cache.test.mjs`、`profile-recovery.test.mjs`、`diagnostics.test.mjs`、`smoke-tolerance.test.mjs`、`loading-art.test.mjs` 五份均出现在 1.1 输出里（`tarball.mjs` 无独立测试文件，靠「外部 tar 与进程内库逐一双跑」验证）。
+验证：`build-cache.test.mjs`、`profile-recovery.test.mjs`、`diagnostics.test.mjs`、`smoke-tolerance.test.mjs`、`loading-art.test.mjs`、`adaptator/smoke.test.mjs` 六份均出现在 1.1 输出里（`tarball.mjs` 无独立测试文件，靠「外部 tar 与进程内库逐一双跑」验证）。
 
 ### 阶段 2：patch 层校验（需 0.x）
 
@@ -202,7 +202,7 @@ cd $R && DSH_HOME=$R/.cache/smoke-cold node scripts/smoke-packaged.mjs 120
 ```
 验证：同样出现 `phase=application-page`，且明显快于 4.1（文档基线 ~2.5s）。
 
-- [x] ~~**4.3 起不来时的诊断链验证**~~ —— **作废**：该行为已由功能层单测（`diagnostics.test.mjs` 7 例）与官方 `main-startup.spec.ts` 的接线用例覆盖，端到端实跑性价比为负
+- [x] ~~**4.3 起不来时的诊断链验证**~~ —— **作废**：该行为已由功能层单测（`diagnostics.test.mjs` 9 例）与官方 `main-startup.spec.ts` 的接线用例覆盖，端到端实跑性价比为负
 做法：故意破坏 profile（例如删掉 `$DSH_HOME/profiles/desktop/package.json`，或写入一个坏 `cordis.patch.yml`），复跑 4.1。
 验证：启动页显示的标题是 `diagnoseStartupFailure` 命中的**阶段标题 + 下一步 + 原始错误串**；若规则未命中，则照常显示原始错误串（诊断只做加法，不挡真相，决策 25）。
 
@@ -254,10 +254,10 @@ patch 里不得出现任何判断逻辑（该不该跳过、要不要回退、�
 ## 执行顺序建议
 
 **已完成**：0.1–0.6、1.1–1.2、2.1、3.1–3.3、4.1、4.2、5.1–5.4（见顶部实测表）
-**仍欠**：
+**收尾**：
 1. ~~`4.3` 诊断链端到端验证~~ —— **作废**（理由见条目本身）
 2. ~~四份会话文档是否 `git add` 入库~~ —— **已定**：放在 `docs/session/`，四份均已入库
-3. **适配层 `src/adaptator/` 的独立测试** —— 仍未补。这是本清单目前的**唯一欠项**（reproduce 的[验证方式](../reproduce.zh.md#6-验证方式)「适配层（进程内）」一行已如实标注「没有独立测试文件」）。补法即该行写明的「结构断言测试：喂官方样例、断言解析/包装结果」
+3. ~~适配层 `src/adaptator/` 的独立测试~~ —— **已补**：`src/adaptator/smoke.test.mjs` 4 例，其中「检查项清单与顺序」直接与上游 fixture 的 `check*()` 调用对账（上游 clone 不在场时 skip，其余 3 例照跑）；`src/build.config.json` 的 adaptator 复制映射同步加了 `*.test.mjs` exclude。**本清单至此没有欠项**
 
 > 文档中其余「未做」的条目都不是欠账，而是**已决定不做**或**设计上不覆盖**：
 > `prepare:packages` / `prepare:runtime` 不接缓存（决策 22）、`electron-builder` 自带的 Electron 文件树不逐字节复核（决策 20 已知残余）、

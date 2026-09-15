@@ -44,6 +44,28 @@ function step(title) {
   console.log(`build: ${title}`)
 }
 
+/** 读构建日志尾部若干行，失败时给人看。 */
+function tailLog(lines = 25) {
+  if (!existsSync(LOG_PATH)) return ''
+  return readFileSync(LOG_PATH, 'utf8').trimEnd().split('\n').slice(-lines).join('\n')
+}
+
+/**
+ * 跑一条辅助命令（git clone / pnpm install），输出追加进构建日志：长输出不进管道（决策 10）。
+ * @param command - 可执行文件。
+ * @param args - 参数列表。
+ * @param options - 传给 `spawnSync` 的其余选项（`cwd` 等）。
+ */
+function runTool(command, args, options = {}) {
+  const fd = openSync(LOG_PATH, 'a')
+  const result = spawnSync(command, args, { ...options, stdio: ['ignore', fd, fd] })
+  closeSync(fd)
+  const code = result.status ?? 1
+  if (result.error !== undefined || code !== 0) {
+    fail(`${command} ${args.join(' ')} 失败（退出码 ${code}）\n--- 日志尾部 ---\n${tailLog()}`)
+  }
+}
+
 // ---------------------------------------------------------------- 1. 读配置
 
 if (!existsSync(CONFIG_PATH)) fail(`缺少配置 ${CONFIG_PATH}`)
@@ -59,9 +81,21 @@ for (const key of ['upstream', 'checkout', 'copy', 'patches', 'build']) {
 
 const upstream = resolve(REPO_ROOT, config.upstream)
 
-// ---------------------------------------------------------------- 2. 校验源仓库与提交
+// 日志先初始化：取源仓库与装依赖的输也要落盘（长输出不进管道，见决策 10）
+mkdirSync(LOG_DIR, { recursive: true })
+rmSync(LOG_PATH, { force: true })
+step(`构建日志 ${relative(REPO_ROOT, LOG_PATH)}`)
 
-if (!existsSync(join(upstream, '.git'))) fail(`源仓库不是 git 仓库: ${upstream}`)
+// ---------------------------------------------------------------- 2. 取源仓库并校验提交
+
+if (!existsSync(join(upstream, '.git'))) {
+  // 源仓库不随本仓库跟踪：新机器 clone 本仓库后，这里按配置给的地址把它取回来。
+  if (typeof config.upstreamUrl !== 'string' || config.upstreamUrl === '') {
+    fail(`源仓库不是 git 仓库: ${upstream}（配置缺 upstreamUrl，无法自动取回）`)
+  }
+  step(`源仓库缺失，从 ${config.upstreamUrl} 取回`)
+  runTool('git', ['clone', config.upstreamUrl, upstream], { cwd: REPO_ROOT })
+}
 try {
   git(['cat-file', '-e', `${config.checkout}^{commit}`])
 } catch {
@@ -75,6 +109,12 @@ git(['reset', '--hard', 'HEAD'])
 git(['clean', '-fd'])
 git(['checkout', config.checkout])
 step(`已清理工作区并 checkout 到 ${config.checkout.slice(0, 12)}`)
+
+// 依赖也由流程保证：新机器上这一步把上游依赖装上，之后才谈得上构建
+if (!existsSync(join(upstream, 'node_modules'))) {
+  step('源仓库依赖缺失，执行 pnpm install --frozen-lockfile')
+  runTool(process.execPath, [resolvePnpmEntry(), 'install', '--frozen-lockfile'], { cwd: upstream })
+}
 
 // ---------------------------------------------------------------- 4. 复制
 
@@ -188,9 +228,7 @@ function buildStageKey(entry) {
 }
 
 const pnpmEntry = resolvePnpmEntry()
-mkdirSync(LOG_DIR, { recursive: true })
-rmSync(LOG_PATH, { force: true })
-step(`构建日志 ${relative(REPO_ROOT, LOG_PATH)}（pnpm 入口 ${pnpmEntry}）`)
+step(`pnpm 入口 ${pnpmEntry}`)
 
 for (const entry of config.build) {
   const cwd = resolve(upstream, entry.cwd)

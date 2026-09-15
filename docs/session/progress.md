@@ -443,3 +443,143 @@
 | 官方接线用例 `vitest run main-startup + startup-renderer` | **25/25**（这次 diagnostics 用真模块、notice 文案来自真功能层） |
 | `tsc -b apps/desktop/tsconfig.json`（`build:official` 的同一支类型闸门） | **EXIT=0** |
 | 打包产物 + 冒烟 | **未重跑**：完整构建在本会话被环境杀掉两次（前台与后台各一次），日志停在「构建日志 …」那一步；类型闸门与接线用例已过，但「产物仍能起到应用页」这一条没有本次证据 |
+
+## Session 13 — 补适配层测试、修 dev 回退、订正文档
+
+### 触发
+
+用户：「1-3都做」——指 Session 11/12 后清点出的三项：① 补适配层独立测试 ② 订正几处文档 ③ 核实 dev 态回退路径。
+
+### ③ dev 态回退路径（核实结论：是 bug，已修）
+
+`main.ts.patch` 里 `copyWebProfile` 快照 `paths.profile`，`rollbackCopiedProfile` 却回退 `activeProject`。
+上游 `main.ts` 里 `activeProject = development ?? paths.profile`，dev 态两者不同（`paths.profile` 是
+`$DSH_HOME/profiles/desktop`，`activeProject` 是 `.desktop-build/development/project`），且 `copyWebProfile`
+在 dev 下**也被无条件调度**：
+
+- dev 每次启动都会建出 `$DSH_HOME/profiles/desktop` —— 违反 reproduce §3.3 的实测结论（该实测定于 copyWebProfile 加入前）
+- `DSH_HOME` 指向含 `profiles/web` 的真实 home（R2 警告的场景）时，会把真实 web 配置复制进真实 desktop profile
+- 随后 Host 失败回退时，会把取自 `paths.profile` 的快照写回 dev 的 `development/project`，并 `pnpm install` 到那里
+
+**修复**（两处，都在 patch 层的「何时调度」范围）：调用处加 `development === undefined`；回退目标改为
+`paths.profile`（与快照同源，打包态行为不变）。`main-startup.spec.ts` 增 1 例守卫：dev 运行不产生任何
+feature 调用（`featureCalls` 为空）。
+
+### ① 适配层独立测试
+
+新增 `src/adaptator/smoke.test.mjs`（4 例）：清单冻结、**与上游 fixture 的 `check*()` 调用顺序对账**、
+跳过提示行格式、标识原样输出。对账直接读 `deepseek-harness/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs`
+（官方改检查项或重排时本层测试先失败）；上游不在场时该例 skip。`src/build.config.json` 的 adaptator
+复制映射加 `*.test.mjs` exclude（否则测试文件会被注入源仓库）。
+
+### ② 文档订正（按实测）
+
+- design §4.2：「配置快照/回退」删掉不存在的「`ready` 后提交为 last-good」，改为「只在复制前快照、回退范围跟失败点走、没复制就不回退（决策 24）」；「复制 web 配置」补上「仅打包态」边界
+- reproduce：R18 改正（注入到 `apps/desktop/local/` 的功能层 `.mjs` 只让 `--dir` 装配重做，不触发编译）；§3.3 补「加入复制后该结论一度失效、已修复」；§6 适配层一行改为有独立测试、测试例数 16→18 / 7→9、vitest 25/25→26/26
+- `src/adaptator/smoke.mjs`、`src/features/profile-recovery.mjs` 两处注释与实现对齐
+- `docs/session/`：todo-list 单测数改 59、删掉「唯一欠项」；findings 单测数与验证索引更新、删掉已删除的 `verify-diagnosis.mjs`
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `node --test "src/**/*.test.mjs"` | **59 pass / 0 fail**（新增适配层 4 例） |
+| `npm run apply` | **14/14** patch 应用成功；`local/adaptator/` 只有 `smoke.mjs`（exclude 生效） |
+| 官方接线用例 `vitest run main-startup + startup-renderer` | **26/26**（主进程 18 + 渲染 8；新增 dev 守卫 1 例） |
+
+**未重跑**：完整构建与打包冒烟。本轮改的是 patch 与单测/文档，接线由官方 vitest 覆盖；
+`--dir` 装配与产物启动没有本次证据（新 patch 的 dev 分支在打包态不生效，`development === undefined` 恒真）。
+
+## Session 14 — 先 grill 功能规范，再按差距清单实施
+
+### 触发
+
+用户：「先 grill me 功能规范，然后再检查当前项目是否满足功能」。规范定稿后用户选「按差距清单全部实施」。
+
+### grill 定下的决策（8 条）
+
+| # | 决策 |
+|---|---|
+| 1 | 规范范围 = 打包产物上**用户可感知的启动路径**（加载动画 / 迁移 / 快照回退 / 回退提示 / 诊断）；工程保障不进规范 |
+| 2 | web 配置迁移**严格一次性**：desktop profile 新建（仍是官方空形态）时是唯一窗口 |
+| 3 | 记账用 profile 内的标记文件 `.dsh-web-migration.json`（`done` / `abandoned` / `retry`），随官方重置消失 |
+| 4 | 成功判据 = **Host 就绪且本次未回退** → `done` |
+| 5 | 失败分级：装包/探针失败重试、**连续 3 次**转 `abandoned`；Host boot 失败 → 回退 + 重试一次后 `abandoned` |
+| 6 | 依赖 spec **照搬**（range / `github:`），patch 只放宽 `projectManifest` 的精确版本校验 |
+| 7 | 加载动画 **patch 官方 MIME 表加 `.png`**，不再依赖内容嗅探（原 R19） |
+| 8 | 诊断**新增「插件安装失败」阶段**（收 `ERR_PNPM_FETCH_`） |
+
+grill 过程中查实的关键事实（另有记录见 [findings 4.5](findings.md#45-真实-web-profile-的依赖-spec-与-desktop-的校验冲突会话-14)）：
+真实 web profile 的 11 个插件依赖是 5 个 `github:` + 5 个 range + 1 个精确版本，照搬必被官方校验拒绝；
+会话 11 的「实跑通」用的是自造夹具，所以没暴露这条。
+
+### 检查结果（规范 vs 现状）
+
+8 项满足（动画行为、迁移内容、快照四文件与回退三步、只覆盖迁移过的启动、回退提示、诊断机制等），
+8 项不满足（MIME 嗅探、每轮对账、无记账、spec 未放宽、失败处置不符、无 done 写入点、缺安装阶段、边界未入档）。
+
+### 实施
+
+| 位置 | 改动 |
+|---|---|
+| `src/features/profile-recovery.mjs` / `.d.mts` | 新增 `webProfileMigration`（`skip`/`settle`/`migrate`）、`readMigrationRecord` / `writeMigrationRecord` / `recordMigrationFailure`、`isPristineProfile`；`MIGRATION_FAILURE_LIMIT = 3` |
+| `src/patch/main.ts.patch` | 调度改为 `webProfileMigration`；`settle` 记 `done`；迁移失败记 `recordMigrationFailure`；Host 就绪记 `done`；boot 失败回退后记 `abandoned`；MIME 表加 `.png` |
+| `src/patch/project-manager.ts.patch` | `projectManifest` 去掉 `valid(version) !== version` 与孤儿的 `semver` import，错误消息改为 `must map package names to version specs` |
+| `src/features/diagnostics.mjs` / `.d.mts` | 新增 `install` 阶段与 `package-fetch-failed` 规则，排在 `graph` 与 `store` 之间 |
+| `src/patch/main-startup.spec.ts.patch` | 替身换 `webProfileMigration` + 记账函数；4 个用例断言更新；新增 settle / skip 2 例 |
+| `docs/design.zh.md` | §4.2 改写成「启动路径功能规范（用户可感知）」：6 条规范 + 判据、明确不做清单、接线点表更新 |
+| `docs/decisions.zh.md` | 修订 24（探针失败改按失败分级）、25（顺序加安装阶段）；新增 26–30 五条决策 |
+| `docs/reproduce.zh.md` | R19 改为「已修」、R24 更新、§6 例数与 vitest 数更新 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `node --test "src/**/*.test.mjs"` | **67 pass / 0 fail**（新增迁移记账 8 例） |
+| `npm run apply` | **14/14** patch 应用成功 |
+| `tsc -b apps/desktop/tsconfig.json` | **EXIT=0** |
+| 官方接线用例 `vitest run main-startup + startup-renderer` | **28/28**（主进程 20 + 渲染 8，含本地 7 例） |
+
+**未重跑**：完整构建与打包冒烟。规范里新增的 MIME patch、记账写入、spec 放宽都只经过单测 + 接线用例 +
+类型检查；`--dir` 装配与产物启动没有本次证据。
+
+## Session 15 — 端到端验证（迁移路径实跑）
+
+### 触发
+
+用户：「继续，另外，上游本来就不应该有无法复刻的变动，你的理解有问题」——Session 14 末尾把「重新 apply」
+写成需要权衡的代价是错的：`build.config.json` 声明提交与 patch 清单，`build.mjs` 每轮 reset + checkout +
+复制 + 打 patch，工作区任何状态都能原样重建，不存在「损失」。
+
+### 跑了什么
+
+1. `node scripts/build.mjs`（带 `ELECTRON_MIRROR` 与 Windows tar shim）→ **EXIT=0**，277 hit / 3 miss
+   （miss 的正是 `build-official` / `prepare-dsh` / `package-dir`，与改过的 patch 相符）
+2. 冷启动冒烟（清空 `DSH_HOME`）→ 到应用页 + profile 自包含；**记账文件落盘 `status: "done"`**（settle 路径）
+3. 迁移夹具（home 里只有 `profiles/web`）：
+   - 单插件 `dsh-cool-theme`：图校验失败（`requires missing react@^18.2.0`——该插件把 react 声明为 peer）
+   - 真实 `~/.dsh/profiles/web` 全量 11 插件：图校验失败（`dsh-one-dark-pro requires @deepseek-ai/schemastery@3.18.1, found 3.18.2`）
+   - 两次失败都走 `retry` → 第 3 次 `abandoned` → 第 4 次启动 `skip` → 正常到应用页，记账不再累加
+4. 用 R25 的 CDP 读法读启动页原文，才拿到上面两条真实错误（GUI 进程没有 stdout）
+
+### 端到端暴露并修掉的两个缺陷（都只有真跑才能发现）
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| R27 | 重试时报 `ERR_PNPM_OUTDATED_LOCKFILE` | 回退的 `onRepair` 留下「空 profile 的 lockfile」，与下次重试写下的手写清单不同步；pnpm 的 frozen lockfile（CI 默认）拒绝安装 | `ensureProfilePackages` 的 install 显式 `--no-frozen-lockfile` |
+| R28 | 回退报 `refusing to replace unowned package @deepseek-ai/cosmokit` | 迁移的插件依赖 runtime 也拥有的 `@deepseek-ai/*`（sharedPackages 241 个），pnpm 实装成真实目录；官方链接检查拒绝替换 → install 后的 `prepareProfile` 与回退都失败，profile 卡在半坏状态 | 不再先 unlink（整棵 `node_modules` 删除即可通过检查），并在 install 后把 `sharedPackages` 条目逐个清掉再重链接 |
+
+### 验证结果
+
+| 路径 | 结果 |
+|---|---|
+| 默认（无 web profile）→ settle → `done` | ✅ 到应用页 |
+| 迁移失败 → `retry` → 回退 | ✅ profile 回空态、host 链接恢复为指向 runtime |
+| 连续 3 次 → `abandoned` | ✅ 计数正确、不再重试 |
+| `abandoned` 后启动 | ✅ `skip` → 到应用页 |
+
+### 没验证到的
+
+**成功迁移路径**（插件真的进 desktop 并 boot 起来）——手头的真实插件全部与内置 dsh 版本不匹配或缺 peer，
+没有相容的第三方插件可测；`boot 失败 → abandoned` 那条（R26 的 `dsh-whale-widget`）也因此没走到。
+下一轮若拿到相容插件，用同一夹具补这两条。

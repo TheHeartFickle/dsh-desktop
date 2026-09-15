@@ -3,16 +3,21 @@
  *
  * 本层只做判断与文件操作，不直接决定「何时调用」：调用点由 patch 插进官方 `main.ts` 的启动流程。
  *
- * 三件事：
- * 1. `webProfileCopyPlan()` —— 首次启动把 web profile 的**配置语义**搬进 desktop profile（纯计算）。
+ * 四件事：
+ * 1. `webProfileMigration()` —— 判断这次启动要不要迁移，以及迁移什么（纯计算 + 读记账）。
+ *    **严格一次性**：desktop profile 只在仍是官方空形态、且没有写下了结记账时接受迁移；web 之后的
+ *    增删不再影响 desktop。
  * 2. `snapshotProfile()` / `rollbackProfile()` —— 动配置前留快照，启动失败时按「还原文件 → 重建依赖 →
  *    刷新宿主包链接」三步回退；`rollbackProfile` 的第三步由调用方通过 `onRepair` 提供（官方已经有了
  *    这个能力，见 `desktop/scripts/ensure-packages` 的接线），本层不重写包管理器逻辑。
- * 3. `startupNoticeScript()` —— 回退提示的 DOM/CSS（经典脚本字符串），由主进程 `executeJavaScript` 注入。
+ * 3. `readMigrationRecord()` / `writeMigrationRecord()` / `recordMigrationFailure()` —— 迁移记账：
+ *    `done`/`abandoned` 表示已了结，`retry` 允许下次再试（连续失败到上限转 `abandoned`）。
+ * 4. `startupNoticeScript()` —— 回退提示的 DOM/CSS（经典脚本字符串），由主进程 `executeJavaScript` 注入。
  *
  * 为什么复制的是「配置语义」而不是目录：web profile 目录里混着 `.dsh-market`、`update.ps1`、
  * `cordis.yml`、`node_modules` 这类 web 专有产物；照搬目录会把它们一起带进 desktop。这里只搬
- * `package.json` 的 `dependencies`/`overrides`/第三方 bundles 与 `pnpm-workspace.yaml` 全文。
+ * `package.json` 的 `dependencies`/`overrides`/第三方 bundles，以及 `pnpm-workspace.yaml` 的
+ * `allowBuilds` 段（按行合并，其余工作区设置保留 desktop 自己的）。
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -430,3 +435,99 @@ export const ROLLBACK_NOTICE_EN = 'The previous start failed. Desktop restored t
 
 /** `ROLLBACK_NOTICE_EN` 的中文版。 */
 export const ROLLBACK_NOTICE_ZH = '上次启动失败，已回滚到本次启动之前的配置（含从 web profile 复制来的插件）。'
+
+/** 迁移记账文件：它在 profile 内，官方重置 profile 时随之消失，迁移条件自然回到「未处理」。 */
+const MIGRATION_RECORD_FILE = '.dsh-web-migration.json'
+
+/** 连续失败到这个次数就放弃重试。 */
+const MIGRATION_FAILURE_LIMIT = 3
+
+/** 写到这两种状态就表示迁移已了结，之后不再检查 web。 */
+const MIGRATION_SETTLED = Object.freeze(['done', 'abandoned'])
+
+/**
+ * 读迁移记账。
+ * @param options - `profile`。
+ * @returns 记账对象；不存在或不可解析时返回 null。
+ */
+export function readMigrationRecord(options) {
+  const path = join(options.profile, MIGRATION_RECORD_FILE)
+  if (!existsSync(path)) return null
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'))
+    return isRecord(value) && typeof value.status === 'string' ? value : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写迁移记账（先写临时文件再改名，避免半份文件）。
+ * @param options - `profile`、`status`，以及可选的 `failures`。
+ * @returns 写下的记账。
+ */
+export function writeMigrationRecord(options) {
+  const record = { status: options.status, failures: options.failures ?? 0, updatedAt: new Date().toISOString() }
+  const path = join(options.profile, MIGRATION_RECORD_FILE)
+  const temporary = `${path}.tmp-${process.pid}`
+  writeFileSync(temporary, `${JSON.stringify(record, undefined, 2)}\n`, { mode: 0o600 })
+  try {
+    renameSync(temporary, path)
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
+  }
+  return record
+}
+
+/**
+ * 记一次「临时性」迁移失败：未到上限时保持可重试，到上限转 `abandoned`。
+ * @param options - `profile`。
+ * @returns 写下的记账。
+ */
+export function recordMigrationFailure(options) {
+  const previous = readMigrationRecord(options)
+  const failures = (typeof previous?.failures === 'number' ? previous.failures : 0) + 1
+  return writeMigrationRecord({
+    profile: options.profile,
+    status: failures >= MIGRATION_FAILURE_LIMIT ? 'abandoned' : 'retry',
+    failures,
+  })
+}
+
+/**
+ * desktop profile 是否仍是「迁移前」的官方空形态：没有依赖，bundles 只有内置层。
+ *
+ * 用户一旦自己装过插件就不再迁移 —— 严格一次性的边界是不覆盖用户自己的配置。
+ * @param options - `profile` 与可注入的 `fs`。
+ * @returns 是空形态时返回 `true`。
+ */
+export function isPristineProfile(options) {
+  const fs = options.fs ?? {}
+  const manifest = readManifest(fs, join(options.profile, PROFILE_FILES.manifest), 'desktop profile')
+  if (manifest === undefined) return false
+  return Object.keys(dependenciesOf(manifest, 'desktop profile')).length === 0
+    && bundlesOf(manifest, 'desktop profile').plugins.length === 0
+}
+
+/**
+ * 判断这次启动要不要迁移 web 配置。
+ *
+ * 判据全部落在本层，调用方（patch）只按 `action` 调度：
+ * - `skip`：已写了结记账，什么都不做。
+ * - `settle`：这是迁移窗口的结束 —— web 没有第三方插件、profile 已被用户接管、或内容已经一致；
+ *   调用方写下 `done`，之后不再检查。
+ * - `migrate`：按 `plan` 走快照 → 写入 → 装包 → 探针。
+ * @param options - `desktopProfile`、`webProfile` 与可注入的 `fs`。
+ * @returns `{ action, plan? }`。
+ */
+export function webProfileMigration(options) {
+  const fs = options.fs ?? {}
+  const record = readMigrationRecord({ profile: options.desktopProfile })
+  if (record !== null && MIGRATION_SETTLED.includes(record.status)) return { action: 'skip' }
+  const plan = webProfileCopyPlan({ desktopProfile: options.desktopProfile, webProfile: options.webProfile, fs })
+  if (plan === null) return { action: 'settle' }
+  if (!isPristineProfile({ profile: options.desktopProfile, fs })) return { action: 'settle' }
+  if (!webProfileCopyChanged({ desktopProfile: options.desktopProfile, plan, fs })) return { action: 'settle' }
+  return { action: 'migrate', plan }
+}

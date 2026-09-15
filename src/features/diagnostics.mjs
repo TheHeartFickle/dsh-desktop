@@ -25,6 +25,10 @@ const STAGE = Object.freeze({
     title: 'profile 与插件图失败',
     hint: '桌面 profile 里安装的插件与内置 dsh 不兼容，或依赖解析不完整。在「桌面插件」窗口里禁用或更新最近安装的插件；也可以在上次启动失败后用启动页的「禁用全部第三方插件并重试」。',
   },
+  install: {
+    title: '插件安装失败',
+    hint: 'profile 声明的依赖没有取到：包不在 registry 上、规格无法解析，或 git／本地来源在这台机器上取不到。在「桌面插件」窗口移除或更换该插件后重启；若这是从 web profile 迁移过来的插件，也可以用启动页的「重置 Desktop 并重试」回到干净 profile。',
+  },
   store: {
     title: '包管理缓存失败',
     hint: '内置 pnpm 读写自己的 store / cache 目录失败（常见原因：磁盘空间不足、目录被杀软或同步工具占用、跨盘硬链接不可用）。腾出空间或排除杀软扫描后重启应用；仍失败可删除应用的缓存目录再试。',
@@ -43,7 +47,7 @@ const STAGE = Object.freeze({
  * 规则表，按阶段分组。
  *
  * 每条 `matches(error, context)` 只判断自己的失败面。**组间顺序也是判据**：越具体的失败面越靠前
- * （版本一致性 → 壳与 Host 启动 → 配置 → 插件图 → 包缓存）：越窄的模式越靠前，避免被「requires …」这类宽模式截胡，宽模式不会把具体失败截胡；组内先命中先返回（首因原则）。
+ * （版本一致性 → 壳与 Host 启动 → 配置 → 插件图 → 插件安装 → 包缓存）：越窄的模式越靠前，避免被「requires …」这类宽模式截胡，宽模式不会把具体失败截胡；组内先命中先返回（首因原则）。
  * 正则全部来自上游源码里的真实错误串（`apps/desktop/src/*.ts`、`apps/desktop-host/src/index.ts`）。
  */
 const RULES = Object.freeze({
@@ -68,6 +72,10 @@ const RULES = Object.freeze({
     { id: 'graph-unresolved', matches: /requires missing|outside its owned packages|must declare .* as a peer dependency|requires .*found|missing local plugin|missing or incorrect host link/i },
     { id: 'graph-incomplete-install', matches: /invalid installed package|has no manifest|duplicate or aliased host package|linked private package|linked package container|declares no dsh\.profile|must begin with the built-in desktop bundles/i },
     { id: 'plugin-load-failed', matches: /copied web profile plugins could not be loaded|cannot be loaded/i },
+  ],
+  install: [
+    // 只收 pnpm 真实报错里出现过的错误码族（`ERR_PNPM_FETCH_404` 为实测样本）；拿到新样本再补具体码。
+    { id: 'package-fetch-failed', matches: /ERR_PNPM_FETCH_/i },
   ],
   store: [
     { id: 'lock-contention', matches: /another package transaction is active|package transaction lock|package transaction lost its lock/i },

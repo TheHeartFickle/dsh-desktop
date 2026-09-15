@@ -108,3 +108,59 @@ export const ROLLBACK_NOTICE_EN: string
 
 /** 回退后给用户看的提示（中文）。 */
 export const ROLLBACK_NOTICE_ZH: string
+
+/** 迁移记账状态：`done`/`abandoned` 表示已了结，`retry` 表示下次启动还可以再试。 */
+export type MigrationStatus = 'retry' | 'done' | 'abandoned'
+
+/** 迁移记账（profile 内的 `.dsh-web-migration.json`）。 */
+export interface MigrationRecord {
+  readonly status: MigrationStatus
+  /** 连续失败次数；写了结状态后不再累加。 */
+  readonly failures: number
+  readonly updatedAt: string
+}
+
+/**
+ * 读迁移记账。
+ * @param options - profile 目录。
+ * @returns 记账；不存在或不可解析时返回 null。
+ */
+export function readMigrationRecord(options: { readonly profile: string }): MigrationRecord | null
+
+/**
+ * 写迁移记账。
+ * @param options - profile、状态与可选的失败次数。
+ * @returns 写下的记账。
+ */
+export function writeMigrationRecord(options: {
+  readonly profile: string
+  readonly status: MigrationStatus
+  readonly failures?: number
+}): MigrationRecord
+
+/**
+ * 记一次临时性迁移失败；连续达到上限时转 `abandoned`。
+ * @param options - profile 目录。
+ * @returns 写下的记账。
+ */
+export function recordMigrationFailure(options: { readonly profile: string }): MigrationRecord
+
+/**
+ * profile 是否仍是官方空形态（没有依赖、bundles 只有内置层）。
+ * @param options - profile 目录。
+ * @returns 是空形态时返回 `true`。
+ */
+export function isPristineProfile(options: { readonly profile: string; readonly fs?: unknown }): boolean
+
+/** 这次启动对迁移的处置。 */
+export type WebProfileMigrationResult =
+  | { readonly action: 'skip' }
+  | { readonly action: 'settle' }
+  | { readonly action: 'migrate'; readonly plan: WebProfileCopyPlan }
+
+/**
+ * 判断这次启动要不要迁移 web 配置。
+ * @param options - desktop/web profile 目录。
+ * @returns 处置结果。
+ */
+export function webProfileMigration(options: WebProfileCopyOptions): WebProfileMigrationResult

@@ -1,11 +1,13 @@
 {
   "upstream": "deepseek-harness",
+  "upstreamUrl": "https://github.com/deepseek-ai/deepseek-harness.git",
   "checkout": "c291e7961a515f6d7af9304e7fd1d257929aef26",
   "copy": [
     {
       "from": "adaptator",
       "to": "apps/desktop/local/adaptator",
       "exclude": [
+        "*.test.mjs",
         "renderer"
       ]
     },

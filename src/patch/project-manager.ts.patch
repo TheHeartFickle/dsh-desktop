@@ -1,8 +1,29 @@
 diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
-index a91c6af6b2..1153dade84 100644
+index a91c6af6b2..3929b511a0 100644
 --- a/apps/desktop/src/project-manager.ts
 +++ b/apps/desktop/src/project-manager.ts
-@@ -279,6 +279,38 @@ export class DesktopProjectManager {
+@@ -1,6 +1,5 @@
+ /** In-place owner of the reserved desktop profile and its private pnpm state. */
+ 
+-import { valid } from 'semver'
+ import { spawn } from 'node:child_process'
+ import {
+   existsSync,
+@@ -157,9 +156,11 @@ function projectManifest(projectDir: string): DesktopProjectManifest {
+     throw new Error(`desktop project: invalid desktop profile manifest ${path}`)
+   }
+   const manifest = { ...value, dependencies: value.dependencies ?? {} } as unknown as DesktopProjectManifest
++  // Local customization: keep the declared dependency spec as-is. The web profile this may have been
++  // copied from uses ranges and git specs, and pnpm resolves them the same way it does for web.
+   if (Object.entries(manifest.dependencies).some(([name, version]) => !PACKAGE_NAME_PATTERN.test(name)
+-    || typeof version !== 'string' || valid(version) !== version)) {
+-    throw new Error('desktop project: plugin dependencies must use exact registry versions')
++    || typeof version !== 'string')) {
++    throw new Error('desktop project: plugin dependencies must map package names to version specs')
+   }
+   return manifest
+ }
+@@ -279,6 +280,48 @@ export class DesktopProjectManager {
      }
    }
  
@@ -31,9 +52,19 @@ index a91c6af6b2..1153dade84 100644
 +      if (!existsSync(join(projectDir, 'package.json')) || !existsSync(join(projectDir, 'pnpm-workspace.yaml'))) {
 +        throw new Error('desktop project: restored profile is missing its configuration files')
 +      }
-+      unlinkDesktopHostPackages(projectDir)
++      // Remove the whole tree instead of unlinking the recorded host packages first: a previous
++      // install may already have replaced those links with real directories, and the recorded link
++      // check refuses to touch anything it does not recognise. A missing tree passes that check.
 +      removeOwnedDirectory(join(projectDir, 'node_modules'))
-+      await this.runPnpm(projectDir, ['install', '--ignore-scripts'])
++      // The manifest is written outside the package commands, so any lockfile left here is stale by
++      // construction -- after a rollback it is the empty profile's. pnpm's frozen lockfile (the CI
++      // default) would refuse the install outright, so ask for the update explicitly.
++      await this.runPnpm(projectDir, ['install', '--no-frozen-lockfile', '--ignore-scripts'])
++      // Plugins may depend on packages the runtime also owns, and pnpm then materialises those as
++      // real directories. Drop those entries so the relink below restores the runtime's own copies.
++      for (const shared of this.currentRuntime().sharedPackages) {
++        removeOwnedDirectory(join(projectDir, 'node_modules', ...shared.name.split('/')))
++      }
 +      await this.finishPackageOperation(projectDir)
 +    })
 +  }

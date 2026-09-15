@@ -1,8 +1,9 @@
 /**
  * 实现层单测：`node --test "src/features/*.test.mjs"`
  *
- * 三个方向都要覆盖：复制只搬 web 的第三方插件语义（内置层与本地依赖不许被搬走或被改坏）、
- * 快照回退必须回到「文件 == 快照」且快照里没有的文件要删掉、提示脚本能在假 DOM 里真的插入一个元素。
+ * 四个方向都要覆盖：复制只搬 web 的第三方插件语义（内置层与本地依赖不许被搬走或被改坏）、
+ * 快照回退必须回到「文件 == 快照」且快照里没有的文件要删掉、迁移记账决定这次要不要迁移、
+ * 提示脚本能在假 DOM 里真的插入一个元素。
  */
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -11,9 +12,10 @@ import { join } from 'node:path'
 import test from 'node:test'
 import vm from 'node:vm'
 import {
-  applyWebProfileCopy, copyFailureMessage, installProbeFailures, rollbackProfile, ROLLBACK_RETRY_FAILURE,
-  ROLLBACK_NOTICE_EN, ROLLBACK_NOTICE_ZH, ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript,
-  webProfileCopyChanged, webProfileCopyPlan,
+  applyWebProfileCopy, copyFailureMessage, installProbeFailures, isPristineProfile, readMigrationRecord,
+  recordMigrationFailure, rollbackProfile, ROLLBACK_RETRY_FAILURE, ROLLBACK_NOTICE_EN, ROLLBACK_NOTICE_ZH,
+  ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript, webProfileCopyChanged, webProfileCopyPlan,
+  webProfileMigration, writeMigrationRecord,
 } from './profile-recovery.mjs'
 
 const BUILTIN_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
@@ -286,4 +288,108 @@ test('探针失败文案与回退日志文案由本层决定（patch 里不许�
 test('用户可见的回退提示也在本层（官方 locale 表只做接线）', () => {
   assert.equal(ROLLBACK_NOTICE_EN.startsWith('The previous start failed.'), true)
   assert.equal(ROLLBACK_NOTICE_ZH.startsWith('上次启动失败'), true)
+})
+
+/** 官方 `createPluginProfile` 建出来的空 profile（迁移窗口内的形态）。 */
+function pristineDesktop(root) {
+  write(root, 'desktop/package.json', JSON.stringify({
+    name: 'dsh-profile-desktop',
+    private: true,
+    version: '0.0.0',
+    dependencies: {},
+    dsh: { profile: { bundles: BUILTIN_BUNDLES } },
+  }, undefined, 2))
+  write(root, 'desktop/pnpm-workspace.yaml', 'packages:\n  - .\n')
+  return join(root, 'desktop')
+}
+
+test('isPristineProfile：官方空形态为真，装了插件为假', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  assert.equal(isPristineProfile({ profile: desktop }), true)
+  write(root, 'desktop/package.json', JSON.stringify({
+    name: 'dsh-profile-desktop',
+    private: true,
+    version: '0.0.0',
+    dependencies: { 'dsh-better-sidebar': '^0.18.1' },
+    dsh: { profile: { bundles: [...BUILTIN_BUNDLES, 'dsh-better-sidebar'] } },
+  }))
+  assert.equal(isPristineProfile({ profile: desktop }), false)
+})
+
+test('webProfileMigration：空 profile + web 有插件 → migrate', t => {
+  const root = scratch(t)
+  const migration = webProfileMigration({
+    desktopProfile: pristineDesktop(root),
+    webProfile: webProfile(root),
+  })
+  assert.equal(migration.action, 'migrate')
+  assert.deepEqual(migration.plan.plugins, ['dsh-better-sidebar'])
+})
+
+test('webProfileMigration：web 没有第三方插件 → settle（窗口结束，之后不再检查）', t => {
+  const root = scratch(t)
+  write(root, 'web/package.json', JSON.stringify({ dsh: { profile: { bundles: BUILTIN_BUNDLES } } }))
+  write(root, 'web/pnpm-workspace.yaml', 'packages:\n  - .\n')
+  assert.equal(webProfileMigration({
+    desktopProfile: pristineDesktop(root),
+    webProfile: join(root, 'web'),
+  }).action, 'settle')
+})
+
+test('webProfileMigration：profile 已被用户接管 → settle，不覆盖用户自己的插件', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  write(root, 'desktop/package.json', JSON.stringify({
+    name: 'dsh-profile-desktop',
+    private: true,
+    version: '0.0.0',
+    dependencies: { 'desktop-only': '1.0.0' },
+    dsh: { profile: { bundles: [...BUILTIN_BUNDLES, 'desktop-only'] } },
+  }))
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: webProfile(root) }).action, 'settle')
+})
+
+test('webProfileMigration：只有 retry 记账时继续迁移，done/abandoned 则跳过', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  const web = webProfile(root)
+  writeMigrationRecord({ profile: desktop, status: 'retry', failures: 1 })
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: web }).action, 'migrate')
+  writeMigrationRecord({ profile: desktop, status: 'done' })
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: web }).action, 'skip')
+  writeMigrationRecord({ profile: desktop, status: 'abandoned' })
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: web }).action, 'skip')
+})
+
+test('记账落在 profile 内，连续失败到上限转 abandoned', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  assert.equal(readMigrationRecord({ profile: desktop }), null)
+  assert.equal(recordMigrationFailure({ profile: desktop }).status, 'retry')
+  assert.equal(recordMigrationFailure({ profile: desktop }).status, 'retry')
+  const last = recordMigrationFailure({ profile: desktop })
+  assert.equal(last.status, 'abandoned')
+  assert.equal(last.failures, 3)
+  assert.ok(existsSync(join(desktop, '.dsh-web-migration.json')))
+  assert.equal(JSON.parse(readFileSync(join(desktop, '.dsh-web-migration.json'), 'utf8')).status, 'abandoned')
+})
+
+test('readMigrationRecord：坏 JSON 当作没有记账（迁移回到可重试）', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  write(root, 'desktop/.dsh-web-migration.json', '{ not json')
+  assert.equal(readMigrationRecord({ profile: desktop }), null)
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: webProfile(root) }).action, 'migrate')
+})
+
+test('记账文件随 profile 消失：官方重置后重新回到可迁移', t => {
+  const root = scratch(t)
+  const desktop = pristineDesktop(root)
+  writeMigrationRecord({ profile: desktop, status: 'done' })
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: webProfile(root) }).action, 'skip')
+  rmSync(desktop, { recursive: true, force: true })
+  // 官方重置后 profile 会被重新建出来，此时没有任何记账
+  assert.equal(isPristineProfile({ profile: pristineDesktop(root) }), true)
+  assert.equal(webProfileMigration({ desktopProfile: desktop, webProfile: webProfile(root) }).action, 'migrate')
 })

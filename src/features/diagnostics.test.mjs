@@ -24,6 +24,7 @@ const SAMPLES = [
   ['graph', 'graph-unresolved', 'desktop profile: dsh-better-sidebar requires missing @deepseek-ai/dsh-settings@^1.2.0'],
   ['graph', 'graph-incomplete-install', 'desktop profile: invalid installed package C:\\Users\\x\\.dsh\\profiles\\desktop\\node_modules\\broken'],
   ['graph', 'plugin-load-failed', 'dsh desktop: copied web profile plugins could not be loaded:\nbroken-plugin: missing settingsNamespace export'],
+  ['install', 'package-fetch-failed', 'desktop project: pnpm exited with 1: ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/dsh-not-here: Not Found - 404'],
   ['store', 'lock-contention', 'desktop project: another package transaction is active'],
   ['store', 'store-unwritable', 'desktop project: pnpm exited with 1: ERR_PNPM_NO_SPACE Unable to write to store'],
   ['config', 'patch-line-missing', "Error: applyEntryPatches: cordis.patch.yml line id 'session-manager' not found"],

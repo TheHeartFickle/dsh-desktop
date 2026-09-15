@@ -6,7 +6,7 @@
 
 /** 一次启动失败的诊断结果。 */
 export interface DesktopDiagnosis {
-  /** 命中的阶段：`host` / `graph` / `store` / `config` / `version`。 */
+  /** 命中的阶段：`host` / `graph` / `install` / `store` / `config` / `version`。 */
   readonly stage: string
   /** 命中的规则 id，用于日志与测试对照。 */
   readonly rule: string

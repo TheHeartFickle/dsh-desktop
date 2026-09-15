@@ -73,7 +73,7 @@ patch 层 ──调度已封装能力──▶ 功能层(func) ──调用─�
 | 2 | 打包 Windows 产物 | ✅ |
 | 3 | 自研壳归档 | ✅ |
 | 4 | 加载动画：三层实现 + dev 模式视觉验证 | ✅ |
-| 4 | 复制 web 配置 / 配置快照回退 / 回退提示 | ✅ |
+| 4 | web 配置迁移 / 配置快照回退 / 回退提示 | ✅ |
 | 5 | 诊断规则模块（按阶段分组、规则互不可见） | ✅ |
 | — | 打包产物启动冒烟（诊断文件记录启动阶段） | ✅ |
 
@@ -116,41 +116,56 @@ patch 只把两处调用换成它。放在功能层的原因是「怎么读 tarb
 接线点清单与实测数据见 [reproduce.zh.md](reproduce.zh.md) 的[构建缓存的实现与实测](reproduce.zh.md#4-构建缓存的实现与实测)；为什么这么选、否掉了哪些做法，
 见 [decisions.zh.md](decisions.zh.md) 第 12、15–20、22 条。
 
-### 4.2 阶段 4/5 功能
+### 4.2 启动路径功能规范（用户可感知）
 
-| 能力 | 设计要点 |
-|---|---|
-| 加载动画 | 沿用自研壳的鲸鱼动画（`assets/icon.png` → `renderer/loading-art.png`），等待后端时展示，官方 `render()` 判定失败时收起。**已按三层落地**：适配层 `adaptator/renderer/startup-page.js` 固定「插到官方页面哪个位置」，功能层 `features/renderer/loading-art.{js,css}` 负责画面与可见性，patch 只插 `<link>`、两个 `<script>` 和 `render()` 里一行 `dshLoadingArt.sync(failed)`。受 CSP 约束（`script-src 'self'; style-src 'self'; img-src 'self' data:`）：样式是同源 CSS 文件、图片是同源 PNG，无内联脚本/样式；渲染进程没有模块上下文（官方 `startup.js` 是经典脚本），所以两层以经典脚本 + 全局对象组装（决策 21） |
-| 复制 web 配置（已实施） | 触发条件：`profiles/desktop` 不存在且 `profiles/web` 含第三方插件（不存在的那次由官方 `createPluginProfile` 先按官方形态建出来，否则清单的 `name`/`private` 与工作区都不合法）。复制的是**配置语义而非目录**：`dependencies`、`dsh.profile.bundles` 里的第三方条目、`overrides`，以及 `pnpm-workspace.yaml` 的 `allowBuilds`（缺它，带 lifecycle script 的插件装不上）。web profile 里的 `.dsh-market`、`update.ps1` 之类本地产物不搬。**校验时机**：先复制 + **真装依赖**（`pnpm install` 重建 `node_modules`），再在 desktop runtime 的解析语境里校验，失败即回退 |
-| 配置快照/回退（已实施） | 备份 profile 里**用户可变**的文件：`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml`（可缺失）。**不备份** `desktop.cordis.yml`——它是 `desktop-host` 每次启动都重写的常量根配置；`node_modules` 由 lockfile 重建，同样不备份。时机：启动前快照 → 状态 `ready` 后提交为 last-good → 失败则回退并重试**一次** → 二次失败交官方恢复页（避免死循环）。回退必须是三步：还原文件 → 重建依赖 → **刷新宿主包链接**（第一方包是链进 profile 的，只还原文件不足以恢复可启动态） |
-| 回退提示（已实施） | 主进程在 `navigateMain(applicationUrl)` 成功后用 `executeJavaScript` 注入自绘 toast；不依赖 dsh 前端 DOM，也不改 `desktop-host` |
-| 诊断规则（已实施） | 按阶段分组、规则互不可见，沿用「首因原则」。原设计的环境层（Node/npm）与依赖层（dsh 安装）在官方架构下**直接消失**（运行时内置、版本固定），换来的新失败面决定阶段划分：① 壳与 Host 启动（内置 Node 归档、Host 进程与管道握手）② profile 与插件图（装包、`allowBuilds`、`validateDesktopPluginGraph`）③ 包管理缓存（pnpm store 可用性与跨盘、lockfile 冲突）④ 配置层（`cordis.patch.yml` 行 id 失效、快照回退）⑤ 内置 dsh 与插件版本不匹配 |
+适用范围：**打包产物上用户看得见的启动路径行为**。工程保障（构建缓存、smoke 容忍）见 §4.1 与
+[reproduce.zh.md](reproduce.zh.md)；上游本身的能力边界见 [desktop-guide.zh.md](desktop-guide.zh.md)。
+每条给出「规范」（应有行为）与「判据」（怎么证明它成立）；实现形态与接线点见本节末。
 
-**实现形态**：功能层 `src/features/profile-recovery.mjs`（复制 / 快照 / 回退 / 提示）与
+| # | 规范 | 判据 |
+|---|---|---|
+| ① 加载动画 | 等待后端时展示鲸鱼动画（沿用自研壳的 `assets/icon.png` → `renderer/loading-art.png`）；官方 `render()` 判失败时收起，让位给恢复界面。资源必须由 shell 以 `image/png` 返回，**不依赖 Chromium 的内容嗅探**。受 CSP 约束（`script-src 'self'; style-src 'self'; img-src 'self' data:`）：同源 CSS + 同源图片，无内联脚本/样式；渲染进程没有模块上下文（官方 `startup.js` 是经典脚本），两层以经典脚本 + 全局对象组装（决策 21） | `#loading-art` 解码成功（`naturalWidth > 0`）且 CSS 动画在跑；上游给 shell 资源加 `nosniff` 后仍能显示；渲染进程测试断言「只创建 `img`、无内联样式」 |
+| ② web 配置迁移 | **严格一次性**：只在 desktop profile 还是官方空形态、且没有写下了结记账时迁移 `profiles/web` 的第三方插件；此后 web 的增删都不再影响 desktop。迁移的是**配置语义而非目录**：`package.json` 的 `dependencies` 第三方条目与 `overrides`、`dsh.profile.bundles` 第三方条目、`pnpm-workspace.yaml` 的 `allowBuilds` 段（按行合并）；**依赖 spec 照搬**（range / `github:` 都保留），由 patch 放宽官方 `projectManifest` 的精确版本校验。不搬 `.dsh-market`、`update.ps1`、`cordis.yml`、`cordis.patch.yml`、`node_modules` | 首次启动（web 有插件）→ 插件进入 desktop、Host 就绪、记 `done`；第二次启动不迁移；profile 已被用户自己装过 → 不迁移；官方重置后记账消失、重新走一次 |
+| ③ 迁移的成功与失败处置 | `done` = Host 就绪且本次未回退；装包/探针失败 = 临时性 → 回退、不写下了结记账、下次重试，**连续 3 次**转 `abandoned`；Host boot 失败 = 该批插件在本机起不来 → 回退、重试一次、记 `abandoned`（不再重试）。记账文件在 profile 内 | 三条路径都有接线用例；记账随官方重置一起消失；重试与放弃都不写 patch 层文案 |
+| ④ 配置快照与回退 | 快照 profile 里用户可变的四个文件：`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml`（可缺失）。**不备份** `desktop.cordis.yml`（`desktop-host` 每次启动都重写的常量根配置）与 `node_modules`（由 lockfile 重建）。只在**本次要迁移**时、写入前拍一次——迁移前的 profile 就是上一次可启动的配置，不设「`ready` 后提交 last-good」。回退三步：还原文件 → 重建依赖 → **刷新宿主包链接**（第一方包是链进 profile 的，只还原文件不足以恢复可启动态）；**没有迁移的那次启动不回退**（交官方恢复页，决策 24） | 回退后文件与快照逐字节一致、且能重新启动（宿主链接已刷新）；没迁移的启动失败不触发回退 |
+| ⑤ 回退提示 | 回退后若成功进入应用页，注入一次自绘 toast，说明「已回滚到本次启动之前的配置（含从 web profile 复制来的插件）」；不依赖 dsh 前端 DOM，也不改 `desktop-host` | 回退且成功 → 出现一次、约 9s 消失；没有回退时不出现 |
+| ⑥ 启动失败诊断 | 在官方错误出口（启动页 + 原始错误串）之上加一层：把失败归到**一个**阶段，给「标题 + 下一步」，并**保留原始错误串**。按阶段分组、规则互不可见、沿用「首因原则」；未命中返回 null（照官方原样显示）。阶段划分：版本不匹配 / 壳与 Host 启动 / 配置层 / profile 与插件图 / **插件安装失败** / 包管理缓存。规则只基于上游**实测**错误串，不凭空造 | 每条规则都有真实错误串样例；未命中时启动页显示官方原文；`ERR_PNPM_FETCH_404` 落到「插件安装失败」而不是「包管理缓存失败」 |
+
+**明确的边界（不做）**：
+
+- 不镜像 web 的插件启停；web 之后新增的插件也不自动迁移——要用就通过桌面插件窗口装
+- 依赖 spec 照搬的代价：非精确版本（`^`/`github:`）的解析结果由 pnpm 决定，不保证与 web 侧装到的版本一致
+- 探针通过 ≠ 能起来：运行时服务/API 变化只有真正 boot 才暴露（见下方能力边界表）
+- 迁移的插件必须与内置 dsh 相容：实测真实 web profile 的插件会因缺 peer（`react`）或版本不匹配（要求 `@deepseek-ai/schemastery@3.18.1`、运行时 `3.18.2`）在图校验阶段失败；按 ③ 的规则重试到上限后记 `abandoned`，profile 回退到迁移前（R24/R27/R28）
+
+**实现形态**：功能层 `src/features/profile-recovery.mjs`（迁移判断与记账 / 快照 / 回退 / 提示）与
 `src/features/diagnostics.mjs`（诊断规则）承载全部判断；patch 只把调用插进官方 `apps/desktop/src/main.ts`
 与宿主能力（官方 `DesktopProjectManager` 新增两个入口：`ensureProfileDirectory` 按官方形态建 profile、
-`ensureProfilePackages` 让已安装的包与清单一致——删 `node_modules` 后 `pnpm install` 再链接，即官方
-`plugin-add` 之后那条重建路径，只是不带 `--frozen-lockfile`，因为清单是功能层手写的、lockfile 必然不同步）。接线点：
+`ensureProfilePackages` 让已安装的包与清单一致——整棵删掉 `node_modules` 后用
+`pnpm install --no-frozen-lockfile` 重建（清单是功能层手写的、lockfile 必然不同步，而 pnpm 的 frozen 是 CI
+默认、会直接拒绝），再把被 pnpm 实装的 runtime 保留包清掉，交官方 `prepareProfile` 重新链接）。
+打包态与 dev 的分界也在接线层：**dev 直接用自己的 `.desktop-build/development/project`，不碰 `profiles/desktop`**，
+因此不参与迁移与回退。接线点：
 
 | 时机 | 调用 |
 |---|---|
-| `reconcileBackend()` 之前 | `ensureProfileDirectory` → `webProfileCopyPlan` →（有变化才）快照 → 写入 → 真装并刷新宿主链接 → desktop runtime 里探针 `import()` |
-| 复制成功后的任何失败（装包、探针） | 立刻回退到本次启动前的快照并重装，交官方恢复页（不重试）——装包失败发生在探针之前、`backend.start()` 之前，所以它与探针失败走同一分支，不能只挂探针 |
-| Host 启动失败（复制成功后） | 回退一次 → 重装 → 重试启动一次；第二次再失败交官方恢复页 |
+| `reconcileBackend()` 之前 | `ensureProfileDirectory` → `webProfileMigration` 按 `skip` / `settle` / `migrate` 调度：`settle` 记 `done` 并结束；`migrate` 才走快照 → 写入 → 真装并刷新宿主链接 → desktop runtime 里探针 `import()` |
+| 迁移写入后的任何失败（装包、探针） | 回退到写入前的快照并重装 → 记一次失败（连续 3 次转 `abandoned`）→ 交官方恢复页（不重试）。装包失败发生在探针之前、`backend.start()` 之前，所以与探针失败走同一分支 |
+| Host 启动失败（迁移成功后） | 回退一次 → 重装 → 记 `abandoned` → 重试启动一次；第二次再失败交官方恢复页 |
+| Host 就绪 | 本次迁移未被回退时记 `done`（一次性窗口关闭） |
 | `showStartupError()` | `diagnoseStartupFailure` 命中的阶段标题 + 下一步 + 原始错误串 |
 | 回退后成功进入应用页 | `executeJavaScript` 注入一次自绘 toast |
 
-**复制的是配置语义而非目录**（决策 23）：`package.json` 的 `dependencies`/`overrides`/第三方
+**迁移的是配置语义而非目录**（决策 23）：`package.json` 的 `dependencies`/`overrides`/第三方
 `dsh.profile.bundles` 条目，以及 `pnpm-workspace.yaml` 的 `allowBuilds` 段（按行合并，不整文件照搬）。
 `.dsh-market`、`update.ps1`、`cordis.yml`、`node_modules` 等 web 专用本地产物不搬。
+web profile 的 `cordis.patch.yml` 也不搬：它是该 profile 自己的 patch 层，且可能引用 web 目录里的相对文件
+（例如 `rewind-common.gitignore`），搬过去会指向不存在的路径。
 
-**两条边界**（写在这里，免得被读成「所有情况都管」）：
-1. web profile 的 `cordis.patch.yml` 不复制：它是该 profile 自己的 patch 层，且可能引用 web 目录里的相对文件
-   （例如 `rewind-common.gitignore`），搬过去会指向不存在的路径。
-2. 快照只覆盖 `package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml` 四个用户可变文件；
-   `desktop.cordis.yml` 每个启动都被官方重写、`node_modules` 由 lockfile 重建，都不进快照。
+快照只覆盖 `package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml`、`cordis.patch.yml` 四个用户可变文件；
+`desktop.cordis.yml` 每个启动都被官方重写、`node_modules` 由 lockfile 重建，都不进快照。
 
-#### 插件兼容性校验的能力边界（对应上表「复制 web 配置」的校验时机）
+#### 插件兼容性校验的能力边界（对应 ② 的校验时机）
 
 一次子进程 `import()` 只能证明「这个模块能被加载」。边界必须写清，否则容易被读成「校验通过 = 能起来」：
 

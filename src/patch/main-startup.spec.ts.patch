@@ -1,8 +1,8 @@
 diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
-index 2b2e47d66d..4d8fd24008 100644
+index 2b2e47d66d..b9f00689b5 100644
 --- a/apps/desktop/tests/main-startup.spec.ts
 +++ b/apps/desktop/tests/main-startup.spec.ts
-@@ -14,6 +14,11 @@ const harness = await vi.hoisted(async () => {
+@@ -14,6 +14,12 @@ const harness = await vi.hoisted(async () => {
    const hosts: FakeHost[] = []
    const handlers = new Map<string, (event: { senderFrame: { url: string } }) => unknown>()
    let pluginsEnabled = false
@@ -10,11 +10,12 @@ index 2b2e47d66d..4d8fd24008 100644
 +  let profileCopyPlan: { manifest: Record<string, unknown>; workspace: string; plugins: readonly string[] } | null
 +    = null
 +  let profileCopyChanged = false
++  let migrationAction: 'skip' | 'settle' | 'migrate' | undefined
 +  let probeFailures: readonly string[] = []
    let preparing = deferred()
    let prepared = deferred()
    let hostStarted = deferred()
-@@ -73,7 +78,11 @@ const harness = await vi.hoisted(async () => {
+@@ -73,7 +79,12 @@ const harness = await vi.hoisted(async () => {
      }),
    })
    return {
@@ -22,23 +23,25 @@ index 2b2e47d66d..4d8fd24008 100644
 +    windows, hosts, handlers, app, FakeWindow, FakeHost, featureCalls,
 +    get profileCopyPlan() { return profileCopyPlan }, set profileCopyPlan(value) { profileCopyPlan = value },
 +    get profileCopyChanged() { return profileCopyChanged }, set profileCopyChanged(value) { profileCopyChanged = value },
++    get migrationAction() { return migrationAction }, set migrationAction(value) { migrationAction = value },
 +    get probeFailures() { return probeFailures }, set probeFailures(value) { probeFailures = value },
 +    nextErrorPublished() { errorPublished = deferred(); return errorPublished.promise },
      dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
      applyRelease: vi.fn(() => { preparing.resolve(); return prepared.promise }),
      assertProfileRuntime: vi.fn(),
-@@ -88,6 +97,10 @@ const harness = await vi.hoisted(async () => {
+@@ -88,6 +99,11 @@ const harness = await vi.hoisted(async () => {
        windows.length = 0; hosts.length = 0; handlers.clear(); app.removeAllListeners()
        app.isPackaged = true
        pluginsEnabled = false
 +      featureCalls.length = 0
 +      profileCopyPlan = null
 +      profileCopyChanged = false
++      migrationAction = undefined
 +      probeFailures = []
        preparing = deferred(); prepared = deferred(); hostStarted = deferred()
        navigated = deferred(); errorPublished = deferred(); quitCompleted = deferred()
      },
-@@ -104,12 +117,14 @@ vi.mock('electron', () => ({
+@@ -104,12 +120,14 @@ vi.mock('electron', () => ({
    Menu: { setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
  }))
@@ -54,17 +57,20 @@ index 2b2e47d66d..4d8fd24008 100644
      async mutate(_mutation: unknown, hooks: { beforeChange(): Promise<void>; afterChange(): Promise<void> }) {
        await hooks.beforeChange()
        harness.pluginsEnabled = false
-@@ -120,6 +135,23 @@ vi.mock('../src/project-manager.ts', () => ({
+@@ -120,6 +138,26 @@ vi.mock('../src/project-manager.ts', () => ({
      }
    },
  }))
 +vi.mock('../local/features/profile-recovery.mjs', async (importOriginal) => ({
 +  ...(await importOriginal<typeof import('../local/features/profile-recovery.mjs')>()),
-+  webProfileCopyPlan: () => {
-+    harness.featureCalls.push('plan')
-+    return harness.profileCopyPlan
++  webProfileMigration: () => {
++    harness.featureCalls.push('migration')
++    const action = harness.migrationAction
++      ?? (harness.profileCopyPlan !== null && harness.profileCopyChanged ? 'migrate' : 'settle')
++    return action === 'migrate' ? { action, plan: harness.profileCopyPlan } : { action }
 +  },
-+  webProfileCopyChanged: () => harness.profileCopyChanged,
++  writeMigrationRecord: (options: { status: string }) => { harness.featureCalls.push(`record-${options.status}`) },
++  recordMigrationFailure: () => { harness.featureCalls.push('record-failure') },
 +  applyWebProfileCopy: () => { harness.featureCalls.push('apply') },
 +  snapshotProfile: () => ({ files: { 'package.json': '{"private":true}\n' } }),
 +  rollbackProfile: async (options: { onRepair(): Promise<void> }) => {
@@ -78,7 +84,7 @@ index 2b2e47d66d..4d8fd24008 100644
  vi.mock('../src/host-process.ts', () => ({ DesktopHostProcess: harness.FakeHost }))
  vi.mock('../src/update-coordinator.ts', () => ({ DesktopUpdateCoordinator: vi.fn() }))
  
-@@ -297,11 +329,11 @@ describe('desktop main startup', () => {
+@@ -297,11 +335,11 @@ describe('desktop main startup', () => {
      harness.hosts[0]!.ready.resolve()
      await Promise.all([retry, secondRetry, harness.navigated.promise])
      expect(harness.applyRelease).toHaveBeenCalledTimes(1)
@@ -92,7 +98,21 @@ index 2b2e47d66d..4d8fd24008 100644
      })
      expect(harness.hosts[0]!.start).toHaveBeenCalledTimes(1)
      expect(harness.windows).toHaveLength(1)
-@@ -346,6 +378,77 @@ describe('desktop main startup', () => {
+@@ -322,6 +360,13 @@ describe('desktop main startup', () => {
+     expect(harness.dialog.showErrorBox).not.toHaveBeenCalled()
+   })
+ 
++  it('leaves the desktop profile untouched in a development run', async () => {
++    harness.app.isPackaged = false
++    await import('../src/main.ts')
++    await harness.hostStarted.promise
++    expect(harness.featureCalls).toEqual([])
++  })
++
+   it('keeps startup errors and a successful retry in the same window', async () => {
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -346,6 +391,106 @@ describe('desktop main startup', () => {
      expect(harness.dialog.showErrorBox).not.toHaveBeenCalled()
    })
  
@@ -101,13 +121,42 @@ index 2b2e47d66d..4d8fd24008 100644
 +    harness.profileCopyChanged = true
 +    await import('../src/main.ts')
 +    await harness.preparing.promise
-+    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'apply', 'install'])
 +    harness.prepared.resolve()
 +    await harness.hostStarted.promise
 +    expect(harness.assertProfileRuntime).toHaveBeenCalledWith('desktop-test-profiles/desktop')
 +    harness.hosts[0]!.ready.resolve()
 +    await harness.navigated.promise
 +    expect(harness.windows[0]!.urls.at(-1)).toBe('dsh-app://app/index.html')
++    // Host 就绪即关闭一次性迁移窗口：记账写 done。
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'apply', 'install', 'record-done'])
++  })
++
++  it('settles the migration window when the feature layer finds nothing to copy', async () => {
++    harness.migrationAction = 'settle'
++    await import('../src/main.ts')
++    await harness.preparing.promise
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'record-done'])
++    harness.prepared.resolve()
++    await harness.hostStarted.promise
++    harness.hosts[0]!.ready.resolve()
++    await harness.navigated.promise
++    expect(harness.windows[0]!.urls.at(-1)).toBe('dsh-app://app/index.html')
++    // settle 没有复制，Host 就绪不该再写一次记账。
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'record-done'])
++  })
++
++  it('skips the migration once the profile was settled', async () => {
++    harness.migrationAction = 'skip'
++    await import('../src/main.ts')
++    await harness.preparing.promise
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration'])
++    harness.prepared.resolve()
++    await harness.hostStarted.promise
++    harness.hosts[0]!.ready.resolve()
++    await harness.navigated.promise
++    expect(harness.windows[0]!.urls.at(-1)).toBe('dsh-app://app/index.html')
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration'])
 +  })
 +
 +  it('abandons a copied profile whose plugin cannot load and leaves recovery to the startup page', async () => {
@@ -117,7 +166,7 @@ index 2b2e47d66d..4d8fd24008 100644
 +    vi.spyOn(console, 'error').mockImplementation(() => {})
 +    await import('../src/main.ts')
 +    await harness.errorPublished.promise
-+    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install', 'rollback', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'apply', 'install', 'rollback', 'install', 'record-failure'])
 +    expect(harness.hosts).toHaveLength(0)
 +    expect(harness.windows[0]!.urls.at(-1)).toBe('dsh-app://shell/startup.html')
 +  })
@@ -138,7 +187,7 @@ index 2b2e47d66d..4d8fd24008 100644
 +    harness.hosts[0]!.exited.resolve()
 +    await firstFailure.promise
 +    await retryStarted
-+    expect(harness.featureCalls).toEqual(['ensure-directory', 'plan', 'apply', 'install', 'rollback', 'install'])
++    expect(harness.featureCalls).toEqual(['ensure-directory', 'migration', 'apply', 'install', 'rollback', 'install', 'record-abandoned'])
 +    expect(logged).toHaveBeenCalledWith(
 +      'dsh desktop: rolled the profile back to the pre-copy configuration; retrying once',
 +    )
