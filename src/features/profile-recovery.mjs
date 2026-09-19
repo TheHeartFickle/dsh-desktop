@@ -7,9 +7,9 @@
  * 1. `webProfileMigration()` —— 判断这次启动要不要迁移，以及迁移什么（纯计算 + 读记账）。
  *    **严格一次性**：desktop profile 只在仍是官方空形态、且没有写下了结记账时接受迁移；web 之后的
  *    增删不再影响 desktop。
- * 2. `snapshotProfile()` / `rollbackProfile()` —— 动配置前留快照，启动失败时按「还原文件 → 重建依赖 →
- *    刷新宿主包链接」三步回退；`rollbackProfile` 的第三步由调用方通过 `onRepair` 提供（官方已经有了
- *    这个能力，见 `desktop/scripts/ensure-packages` 的接线），本层不重写包管理器逻辑。
+ * 2. `snapshotProfile()` / `rollbackProfile()` —— 动配置前留快照，启动失败时按「还原文件 → 重建依赖」两步回退；
+ *    `rollbackProfile` 的第二步由调用方通过 `onRepair` 提供（重建能力本身在适配层，见
+ *    `src/adaptator/profile-packages.mjs`），本层不重写包管理器逻辑。
  * 3. `readMigrationRecord()` / `writeMigrationRecord()` / `recordMigrationFailure()` —— 迁移记账：
  *    `done`/`abandoned` 表示已了结，`retry` 允许下次再试（连续失败到上限转 `abandoned`）。
  * 4. `startupNoticeScript()` —— 回退提示的 DOM/CSS（经典脚本字符串），由主进程 `executeJavaScript` 注入。
@@ -24,17 +24,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-
-/** 快照覆盖与完整性判据都基于这张表；不在此表的文件一律不碰（`desktop.cordis.yml` 由每个启动重写，`node_modules` 由 lockfile 重建）。 */
-const PROFILE_FILES = Object.freeze({
-  manifest: 'package.json',
-  workspace: 'pnpm-workspace.yaml',
-  lockfile: 'pnpm-lock.yaml',
-  patch: 'cordis.patch.yml',
-})
-
-/** 内置 bundles：desktop profile 的清单必须以它们开头（与官方 `DESKTOP_PROFILE_BUNDLES` 同义）。 */
-const BUILTIN_BUNDLES = Object.freeze(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+import { BUILTIN_BUNDLES, PROFILE_FILES } from '../adaptator/profile-layout.mjs'
 
 /** `pnpm-workspace.yaml` 里需要从 web profile 合并的构建授权段。 */
 const ALLOW_BUILDS = 'allowBuilds'
@@ -285,8 +275,8 @@ export function snapshotProfile(options) {
 }
 
 /**
- * 回退到快照并重建 profile：还原文件（快照里没有的删除）→ 交调用方重建依赖与宿主链接。
- * @param options - `profile`、`snapshot`、`onRepair`（官方重建能力）、可注入的 `fs` 与 `errors`。
+ * 回退到快照并重建 profile：还原文件（快照里没有的删除）→ 交调用方重建依赖。
+ * @param options - `profile`、`snapshot`、`onRepair`（重建依赖的能力）、可注入的 `fs` 与 `errors`。
  * @returns `{ restored, removed }` 两个文件名列表。
  */
 export async function rollbackProfile(options) {
@@ -360,7 +350,8 @@ export function installProbeFailures(options) {
     const result = spawnSync(node, [script, profile, JSON.stringify(plugins)], {
       encoding: 'utf8',
       timeout: 120_000,
-      env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
+      // `node` 是 Electron 可执行文件（官方 runtime 描述给的就是它），必须以 Node 模式启动。
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '', NODE_PATH: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     if (result.error !== undefined) return [...plugins.map(name => `${name}: probe could not run (${result.error.message})`)]

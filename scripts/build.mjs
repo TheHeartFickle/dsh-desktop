@@ -3,8 +3,9 @@
  * 构建入口：读 `src/build.config.json`，按六步执行。
  *
  *   1. 读配置
- *   2. 校验源仓库存在且是 git 仓库；校验 checkout 提交存在（不存在 → 报错退出）
- *   3. 清理工作区（丢弃未提交改动与未跟踪文件，不动 ref / 远程 / 历史）→ checkout 到指定提交
+ *   2. 取源仓库；把配置声明的 tag 解析成提交（解析不到 → 报错退出）
+ *   3. 清理工作区（丢弃未提交改动与未跟踪文件，不动 ref / 远程 / 历史）→ checkout 到解析出的提交；
+ *      按配置补齐打包本地设置（缺则从官方模板生成，已存在的不覆盖）
  *   4. 按 copy 映射复制文件到源仓库指定位置
  *   5. 按 patches 顺序应用 git patch（先 --check 再 apply）
  *   6. 按 build 列表在源仓库执行构建指令
@@ -12,15 +13,16 @@
  * `--apply-only`（`npm run apply`）在第 5 步之后停下：只把功能层、适配层与 patch 落到源仓库，
  * 不执行第 6 步的构建指令。前五步与完整构建逐字相同，所以它是「先摆好现场，再自己跑构建或调试」的入口。
  *
- * 本脚本不含任何源仓库脚本名、路径、提交号、镜像地址的硬编码 —— 这些都在配置里。
+ * 本脚本不含任何源仓库脚本名、路径、tag、镜像地址的硬编码 —— 这些都在配置里。
  * 路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
  * `copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { checkLayers, loadProject, renderReport } from './check-layers.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..')
@@ -66,6 +68,18 @@ function runTool(command, args, options = {}) {
   }
 }
 
+// ---------------------------------------------------------------- 0. 分层门限
+
+// 三层设计腐败不会让任何测试失败，只会让下一次上游升级从「重新生成 patch」恶化为「重写两层」。
+// 所以它挡在构建最前面：在进程内跑（不另起进程），失败就把完整报告原样打出来。
+const layering = checkLayers(loadProject(REPO_ROOT))
+const layeringSoft = layering.findings.filter(finding => finding.severity === 'soft')
+if (layeringSoft.length > 0) console.log(renderReport({ ...layering, findings: layeringSoft }, REPO_ROOT).text)
+if (layering.findings.some(finding => finding.severity === 'hard')) {
+  fail(`三层设计腐败，先修这些再构建：\n${renderReport(layering, REPO_ROOT).text}`)
+}
+step('三层设计门限通过')
+
 // ---------------------------------------------------------------- 1. 读配置
 
 if (!existsSync(CONFIG_PATH)) fail(`缺少配置 ${CONFIG_PATH}`)
@@ -75,7 +89,7 @@ try {
 } catch (error) {
   fail(`配置不是合法 JSON: ${error.message}`)
 }
-for (const key of ['upstream', 'checkout', 'copy', 'patches', 'build']) {
+for (const key of ['upstream', 'tag', 'appId', 'releaseEnv', 'copy', 'patches', 'build']) {
   if (config[key] === undefined) fail(`配置缺少字段 ${key}`)
 }
 
@@ -86,7 +100,7 @@ mkdirSync(LOG_DIR, { recursive: true })
 rmSync(LOG_PATH, { force: true })
 step(`构建日志 ${relative(REPO_ROOT, LOG_PATH)}`)
 
-// ---------------------------------------------------------------- 2. 取源仓库并校验提交
+// ---------------------------------------------------------------- 2. 取源仓库并解析 tag
 
 if (!existsSync(join(upstream, '.git'))) {
   // 源仓库不随本仓库跟踪：新机器 clone 本仓库后，这里按配置给的地址把它取回来。
@@ -96,19 +110,63 @@ if (!existsSync(join(upstream, '.git'))) {
   step(`源仓库缺失，从 ${config.upstreamUrl} 取回`)
   runTool('git', ['clone', config.upstreamUrl, upstream], { cwd: REPO_ROOT })
 }
-try {
-  git(['cat-file', '-e', `${config.checkout}^{commit}`])
-} catch {
-  fail(`配置声明的提交不存在: ${config.checkout}`)
+
+/**
+ * 把配置声明的 tag 解析成它此刻指向的提交。
+ *
+ * 配置里存 tag、不存提交号：升级只是换一个 tag，提交号每次现算。解析不到就显式失败——本流程不自动
+ * fetch（不动源仓库的 ref / 远程，决策 8），也不允许「用当前 HEAD 凑合」（决策 5）。
+ * @param tag - 上游 tag 名。
+ * @returns 完整提交号。
+ */
+function resolvePin(tag) {
+  let resolved
+  try {
+    resolved = git(['rev-parse', '--verify', `${tag}^{commit}`])
+  } catch (error) {
+    const detail = (error.stderr?.toString() ?? error.message).trim()
+    const where = relative(REPO_ROOT, upstream) || '.'
+    // `status` 是数字 = git 跑起来了、只是解析不到；否则是 git 根本没执行成功（没装、被环境拦住）。
+    if (typeof error.status !== 'number') fail(`无法在源仓库执行 git: ${detail}`)
+    fail(`源仓库 ${where} 里找不到 tag ${tag}（先取回：git -C ${where} fetch --tags）\n${detail}`)
+  }
+  return resolved.trim()
 }
-step(`源仓库 ${relative(REPO_ROOT, upstream) || '.'}，目标提交 ${config.checkout.slice(0, 12)}`)
+
+const pin = resolvePin(config.tag)
+step(`源仓库 ${relative(REPO_ROOT, upstream) || '.'}，tag ${config.tag} → 提交 ${pin.slice(0, 12)}`)
 
 // ---------------------------------------------------------------- 3. 清理并 checkout
 
 git(['reset', '--hard', 'HEAD'])
 git(['clean', '-fd'])
-git(['checkout', config.checkout])
-step(`已清理工作区并 checkout 到 ${config.checkout.slice(0, 12)}`)
+git(['checkout', pin])
+step(`已清理工作区并 checkout 到 ${config.tag}（${pin.slice(0, 12)}）`)
+
+/**
+ * 按配置补齐打包本地设置。
+ *
+ * 官方打包脚本只从 `apps/desktop/.env.windows` 读发布设置，并且**会把进程环境里的同名变量滤掉**，
+ * 所以这个文件必须存在、且是值的唯一来源；它被官方 gitignore，`git clean -fd` 不会删它。
+ * 只在文件不存在时按官方模板生成，用户改过的内容永不被覆盖（要真签名就在这里填凭据）。
+ * @param {{ template: string, file: string }} entry - 官方模板与目标文件，都相对源仓库根。
+ */
+function seedReleaseEnv(entry) {
+  const target = join(upstream, entry.file)
+  if (existsSync(target)) {
+    step(`已有 ${entry.file}，保持原样`)
+    return
+  }
+  const template = join(upstream, entry.template)
+  if (!existsSync(template)) fail(`发布设置模板不存在: ${entry.template}`)
+  const templateText = readFileSync(template, 'utf8')
+  const seeded = templateText.replace(/^(DSH_DESKTOP_APP_ID=)[^\r\n]*/mu, `$1${config.appId}`)
+  if (seeded === templateText) fail(`${entry.template} 里没有 DSH_DESKTOP_APP_ID，无法写入配置的 appId`)
+  writeFileSync(target, seeded)
+  step(`已按 ${entry.template} 生成 ${entry.file}（DSH_DESKTOP_APP_ID=${config.appId}）`)
+}
+
+for (const entry of config.releaseEnv) seedReleaseEnv(entry)
 
 // 依赖也由流程保证：新机器上这一步把上游依赖装上，之后才谈得上构建
 if (!existsSync(join(upstream, 'node_modules'))) {
@@ -184,7 +242,7 @@ function resolvePnpmEntry() {
 }
 
 /**
- * 算一条构建指令的输入键：pin + 该指令本身 + 工具链清单 + 参与该指令的注入物内容。
+ * 算一条构建指令的输入键：pin（tag 解析出的提交）+ 该指令本身 + 工具链清单 + 参与该指令的注入物内容。
  *
  * 注入物默认**全部**算输入；配置里用 `ignoreTargets` 显式忽略的路径不算（例如页面/资源文件不参与编译）。
  * 因此漏项只可能朝"多算"方向：新加的 copy/patch 只要没被声明忽略，就会让键变化、白白重做一次，
@@ -205,7 +263,7 @@ function buildStageKey(entry) {
       else if (childStats.isFile()) absorbFile(child, `${prefix}/${name}`)
     }
   }
-  hash.update(`checkout\u0000${config.checkout}\u0000`)
+  hash.update(`pin\u0000${pin}\u0000`)
   hash.update(`command\u0000${JSON.stringify([entry.cwd, entry.command, entry.env ?? {}, ignored])}\u0000`)
   for (const manifest of ['package.json', 'pnpm-lock.yaml']) {
     const path = join(upstream, manifest)
@@ -230,18 +288,41 @@ function buildStageKey(entry) {
 const pnpmEntry = resolvePnpmEntry()
 step(`pnpm 入口 ${pnpmEntry}`)
 
+/**
+ * 把这条构建指令的产物复制一份进本仓库。
+ *
+ * 产物写到哪由上游构建脚本决定，本仓库**不改它的输出路径**——配置只声明「这条指令的产物在哪、复制到本仓库的哪」。
+ * 复制而不是移动：源仓库里留着原件，以产物为输出的缓存阶段（如 `package-dir`）下一轮才能照常命中（决策 41）。
+ * @param {{ from: string, to: string }} artifacts - `from` 相对源仓库根；`to` 相对本仓库根。
+ */
+function releaseArtifacts(artifacts) {
+  const from = join(upstream, artifacts.from)
+  const to = resolve(REPO_ROOT, artifacts.to)
+  if (!existsSync(from)) fail(`构建产物不存在: ${artifacts.from}`)
+  rmSync(to, { recursive: true, force: true })
+  mkdirSync(dirname(to), { recursive: true })
+  try {
+    cpSync(from, to, { recursive: true, force: true })
+  } catch (error) {
+    fail(`把产物复制到 ${artifacts.to} 失败: ${error.message}`)
+  }
+  step(`已把 ${artifacts.from} 复制到 ${relative(REPO_ROOT, to) || '.'}`)
+}
+
 for (const entry of config.build) {
   const cwd = resolve(upstream, entry.cwd)
   const [command, ...args] = entry.command
   if (command === undefined) fail('build.command 为空')
-  // `npm_execpath`、`DSH_UPSTREAM_CHECKOUT` 与 `DSH_LOCAL_BUILD_KEY` 同属环境事实：由流程按配置解析后
-  // 注入，不写进配置。pin 让换提交后所有缓存失效；构建键按"忽略页面/资源注入物"的规则算，供
-  // `build:official` 这类阶段判定能否跳过。
+  // `npm_execpath`、`DSH_UPSTREAM_CHECKOUT`、`DSH_DESKTOP_APP_ID` 与 `DSH_LOCAL_BUILD_KEY` 同属环境事实：
+  // 由流程按配置解析后注入。注入的是 tag 解析出的提交，所以换 tag（或 tag 被重指）会让所有缓存失效；appId
+  // 也一并注入（官方打包脚本只认 `.env.windows`，但本地缓存键与 prepare:dsh 读的是环境里的这个值）；构建键
+  // 按"忽略页面/资源注入物"的规则算，供 `build:official` 这类阶段判定能否跳过。
   const environment = {
     ...process.env,
     ...entry.env,
     npm_execpath: pnpmEntry,
-    DSH_UPSTREAM_CHECKOUT: config.checkout,
+    DSH_UPSTREAM_CHECKOUT: pin,
+    DSH_DESKTOP_APP_ID: config.appId,
     DSH_LOCAL_BUILD_KEY: buildStageKey(entry),
   }
   const fd = openSync(LOG_PATH, 'a')
@@ -253,6 +334,7 @@ for (const entry of config.build) {
     fail(`构建指令失败（cwd=${entry.cwd}，退出码 ${code}）\n--- 日志尾部 ---\n${tail}`)
   }
   step(`已执行 ${entry.command.join(' ')}`)
+  if (entry.artifacts !== undefined) releaseArtifacts(entry.artifacts)
 }
 
 console.log('build: 完成')

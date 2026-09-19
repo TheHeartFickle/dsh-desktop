@@ -1,15 +1,28 @@
 diff --git a/apps/desktop/tsdown.config.ts b/apps/desktop/tsdown.config.ts
-index d34cf1bf26..38e0ff04e1 100644
+index aed896b427..ea0c6a58a6 100644
 --- a/apps/desktop/tsdown.config.ts
 +++ b/apps/desktop/tsdown.config.ts
-@@ -10,7 +10,9 @@ export default defineConfig([
+@@ -10,7 +10,10 @@ export default defineConfig([
      fixedExtension: false,
      dts: false,
      clean: false,
 -    deps: { neverBundle: ['electron'] },
-+    // Local customization: the injected feature layer stays a separate runtime file, so only the
-+    // entry that imports it declares it (the preload entries must stay self-contained).
-+    deps: { neverBundle: ['electron', '../local/features/profile-recovery.mjs', '../local/features/diagnostics.mjs'] },
++    // Local customization: the main-process bundle keeps the injected feature layer as a separate
++    // runtime file, resolved from `lib/` at run time. A sandboxed preload cannot do that, so the
++    // preload entries below inline their copy through `alias` instead.
++    deps: { neverBundle: ['electron', '../local/features/profile-recovery.mjs', '../local/features/diagnostics.mjs', '../local/adaptator/profile-packages.mjs'] },
    },
-   ...(['preload', 'preload-app'] as const).map(name => ({
+   ...(['preload-app', 'preload-mandatory', 'preload-update-dialog'] as const).map(name => ({
      // Sandboxed Electron preloads run as CommonJS even though the application package is ESM.
+@@ -22,6 +25,11 @@ export default defineConfig([
+     fixedExtension: false,
+     dts: false,
+     clean: false,
++    // Local customization: a sandboxed preload cannot require a file at runtime, so the feature-layer
++    // copy an official preload-visible module imports must be inlined. tsc emits `src/` into
++    // `lib/types/`, so the source-relative specifier resolves one directory too deep from there;
++    // re-relativizing it for the emitted location lets the bundler find and inline the module.
++    alias: { '../local/features/profile-recovery.mjs': '../../local/features/profile-recovery.mjs' },
+     deps: { neverBundle: ['electron'] },
+   })),
+ ])

@@ -9,15 +9,15 @@
 | 项 | 值 |
 |---|---|
 | 源仓库 | `deepseek-harness/`（仓库根下的 clone，独立 `.git`，可 checkout 到任意提交） |
-| 已验证基线 | commit `c291e7961a515f6d7af9304e7fd1d257929aef26`，版本 `0.1.5-rc.2` |
-| tag 差异 | `dsh-v0.1.5-rc.2` 指向另一提交 `fb2c4b9e69`，与基线差 1379 文件 |
+| 已验证基线 | commit `ddefc45fbc7f8e46dd73185e68295696d1297887`，tag `dsh-v0.1.6-alpha.2`，版本 `0.1.6-alpha.2` |
+| 上一基线 | `c291e7961a515f6d7af9304e7fd1d257929aef26`，版本 `0.1.5-rc.2`；两者差 1548 个提交，`apps/desktop` 下 289 文件 / +20850 −4056 行 |
 | Node | `C:\Program Files\nodejs\node.exe` v24.13.0（满足 `engines: ^22.19.0 \|\| >=24.0.0`） |
 | pnpm | 全局 npm 装的是 **11.22.0**，但源仓库 `package.json` 声明 `packageManager: pnpm@11.7.0`，pnpm 自管理会切到 **11.7.0**（实际使用的版本）。**store 必须与该版本匹配**（见 R9） |
 | pnpm store | `D:\.pnpm-store\v11` |
 | 包缓存选盘 | C/D 为 KIOXIA、E 为 ZHITAI，跨盘会失去硬链接；store 与仓库同置于 D 盘 |
 | Electron | 44.0.0（`apps/desktop/node_modules/electron`，随上游 lockfile 变化） |
 | 镜像 | `~/.npmrc` 里配置了 `registry=https://registry.npmmirror.com`（注意上游构建会屏蔽它，见 R10） |
-| 打包需要 | `DSH_DESKTOP_APP_ID`（反向域名）；`--unsigned` 模式下不需要签名证书 |
+| 打包需要 | `apps/desktop/.env.windows`（官方的发布设置文件，**唯一来源**；构建按配置的 `releaseEnv` 从官方模板生成，见 R29）；`--unsigned` 模式下不需要签名证书 |
 | 冒烟取证 | `DSH_DESKTOP_DIAGNOSTIC_FILE`：设置后主进程把启动阶段（`phase=starting / ready / error`、`phase=application-page`）追加进该文件；未设置时完全不写（见 R21/R22） |
 
 > 源仓库的依赖（`node_modules`）与构建产物都**不随本仓库同步**：新机器 clone 后需先安装依赖，再按[复刻命令](#3-复刻命令)构建。
@@ -33,7 +33,7 @@
 | R3 | 桌面端一启动，agent loop 卡死 | 与运行中的 agent 会话共用 `$DSH_HOME`。**对策**：验证时一律用独立 home |
 | R4 | 直接跑 `electron.exe <APP_ROOT>` 显示官方恢复页 | 跳过了 `prepareDevelopmentProject()`——它每次都删除并重建 `.desktop-build/development/project` 并写入运行元数据。**对策**：走完整启动器 |
 | R5 | 长任务把 agent loop 卡死 | 巨量 stdout 灌满 subprocess 管道（**实测卡死两次**）。**对策**：`*> 日志文件` 或后台 + 只读日志尾部 |
-| R6 | 插件树加载失败导致后端起不来、日志刷屏 | 上游 smoke 检查要求已被 `node-addon-system` 取代的 `fs-ext`。**对策**：patch 层容忍其缺失（功能层封装判断，patch 只插入调用） |
+| R6 | 插件树加载失败导致后端起不来、日志刷屏 | 旧基线上游 smoke 检查要求已被 `node-addon-system` 取代的 `fs-ext`，当时的对策是 patch 层容忍其缺失（功能层 `smoke-tolerance.mjs` 封装判断）。**`0.1.6-alpha.2` 起上游整体删除了 `checkFsExt`**，没有可容忍的检查，该功能层与对应 patch 一并移除（决策 30） |
 | R7 | `pnpm config set … --global` 静默不生效 | 它触发无关的 global-bin PATH 检查而中断。**对策**：用 `--location=global` |
 | R8 | `pnpm run X -- --unsigned` 参数传错；`pnpm exec tsx …` 报 `invoke this script through a pnpm package command` | pnpm 把 `--` 当字面参数传入；且 `pnpm exec` 不设置 `npm_execpath`，而 `package-target.ts` 的 `runPnpm()` 强制要求它 |
 | R9 | `pnpm install` 报 `unable to open database file` | **pnpm 版本与 store 不匹配**：store 的 `index.db` 由某个大版本建立，另一个版本打不开。本机全局 pnpm 是 11.22.0，源仓库却声明 `pnpm@11.7.0`（自管理切换），两者共用同一个 `store-dir` 就冲突。**对策**：让 store 与「实际调用的 pnpm 版本」一致——本机按 11.7.0 重建；旧 store 备份在 `.pnpm-store.bak-1121` |
@@ -48,24 +48,30 @@
 |---|---|---|
 | R14 | 同一成员 `pnpm pack` 两次，tarball 的 sha256 不同 | 上游打包**不是字节可复现**的：差异只在打包后 manifest 的键顺序（tar/gzip 头与文件清单一致）。缓存判据由此确定 —— 见 [decisions.zh.md](decisions.zh.md) 第 16 条 |
 | R15 | 缓存明明该命中却每轮报 `miss (no-marker)` | marker 一度放在**源仓库根**的 `.desktop-build/local-cache/`，而 `.gitignore` 只忽略 `apps/desktop/.desktop-build/` —— 根目录那份被第 3 步 `git clean -fd` 每轮删掉。**对策**：marker 一律落在 `apps/desktop/.desktop-build/targets/<target>/local-cache/`（被忽略，构建流程的各阶段都不会清它；上游 `pnpm clean` 会清整个 `.desktop-build/`，属预期的冷缓存重置） |
-| R16 | 想确认某次构建到底重做了什么 / 想强制全量重做 | 每个缓存决策都往构建日志（`.cache/build/build.log`）打一行 `build-cache: <stage> hit\|miss (<原因>)`。marker 有两处：`apps/desktop/.desktop-build/targets/<target>/local-cache/*.json`（`build-official`、`prepare-dsh-<target>`、`package-dir-<target>`）与 `.../packed/.pack-cache/<family>/*`（tarball 成员；私有 Host 与 native entry 另有 `<name>/packed/` 与 `tarball.json`）。删掉这两处即回到冷缓存；改 `src/build.config.json` 的 `checkout` 会自动让全部缓存失效 |
+| R16 | 想确认某次构建到底重做了什么 / 想强制全量重做 | 每个缓存决策都往构建日志（`.cache/build/build.log`）打一行 `build-cache: <stage> hit\|miss (<原因>)`。marker 有两处：`apps/desktop/.desktop-build/targets/<target>/local-cache/*.json`（`build-official`、`prepare-dsh-<target>`、`package-dir-<target>`）与 `.../packed/.pack-cache/<family>/*`（tarball 成员；私有 Host 与 native entry 另有 `<name>/packed/` 与 `tarball.json`）。删掉这两处即回到冷缓存；改 `src/build.config.json` 的 `tag`（或 tag 被重指到别的提交）会自动让全部缓存失效 |
 | R17 | 源码一行没改，`prepare:dsh` 却每轮 `miss (key-changed)` | 有两个 `pnpm pack` **不经 `release:pack`**、因此没进成员缓存：私有 Host（`apps/desktop-host`）与 native entry（`native/system/packages/entry`）——前者由 `package-target.ts` 直接 pack，后者在 `rmSync` 后 pack。而 `pnpm pack` 字节不可复现（R14）→ 它们的 `integrity` 每轮都变 → `prepare:packages` 生成的 package set 变 → `prepare:dsh` 的键跟着变。**对策**：两处也走同一套缓存（缓存 packed 出来的目录，再拷进输出目录）。定位方法：构建前后各算一遍逐项 `contentKey`，变化的那一项就是元凶（`prepare:packages` 本身是确定的：同一输入重跑 242 个文件 0 差异） |
-| R18 | 改哪类文件会触发全量重编译？ | 编译阶段的键 = pin + 该构建指令 + 工具链清单 + **参与编译的注入物**；`src/build.config.json` 的 `ignoreTargets` 当前声明 `apps/desktop/renderer` 与 `apps/desktop/local` 不参与。因此改页面/资源（`assets/icon.png`、`src/features/renderer/`、`startup.{html,js}.patch`）与注入到 `apps/desktop/local/` 的功能层/适配层 `.mjs` 都只让 `--dir` 装配重做（装配键含 `apps/desktop/local`），不触发编译；改其他 patch 目标（如 `apps/desktop/src/main.ts`、`scripts/build.ts`）才会让编译阶段重跑一次。**新增注入物默认算编译输入**：想让它不参与，必须在 `ignoreTargets` 里显式写上 |
+| R18 | 改哪类文件会触发全量重编译？ | 编译阶段的键 = pin + 该构建指令 + 工具链清单 + **参与编译的注入物**；`src/build.config.json` 的 `ignoreTargets` 当前声明 `apps/desktop/renderer` 与 `apps/desktop/local` 不参与。因此改页面/资源（`assets/icon.png`、`assets/dsh-impact.png`、`src/features/renderer/`、`src/adaptator/renderer/`）与注入到 `apps/desktop/local/` 的功能层/适配层 `.mjs` 都只让 `--dir` 装配重做（装配键含 `apps/desktop/local`），不触发编译；改其他 patch 目标（如 `apps/desktop/src/main.ts`、`scripts/build.ts`）才会让编译阶段重跑一次。**新增注入物默认算编译输入**：想让它不参与，必须在 `ignoreTargets` 里显式写上 |
 
 ### 2.3 启动页与渲染进程
 
 | # | 现象 | 根因与对策 |
 |---|---|---|
-| R19 | 加载动画的 PNG 能从 shell 资源里显示吗？ | **已修**：`apps/desktop/src/main.ts` 的 MIME 表原先只有 `.css/.html/.js/.svg`，`loading-art.png` 按 `application/octet-stream` 返回，只靠 Chromium 对 `<img>` 的内容嗅探才解码正常（实测 `naturalWidth/Height` = 512×512）——上游若给 shell 资源加 `X-Content-Type-Options: nosniff` 就会破。现在 patch 给 MIME 表加了 `.png: 'image/png'`，不再依赖嗅探（决策 29） |
-| R20 | 想验证加载动画真的显示、样式没被 CSP 挡住 | dev 模式（3.3）自带主进程 inspector，从它看最省事：`fetch('http://127.0.0.1:9229/json/list')` 取 `webSocketDebuggerUrl` 连上，`Runtime.evaluate` 里用 `process.mainModule.require('electron')` 拿 `BrowserWindow`，再 `webContents.executeJavaScript()` 读 `#loading-art` 的 `naturalWidth`、`getComputedStyle().animationName`、隔 0.7s 再读 `transform`（两次不同即在动），`capturePage().toPNG()` 存图。**启动页地址是 `dsh-app://shell/startup.html`**（scheme 由 `main.ts` 的 `SCHEME` 决定，`shell://` 是错的）；别用 `webContents.loadURL` 抢导航 —— 应用自身在推进导航时会把它中断（`ERR_FAILED (-2)`），要看就自己 `new BrowserWindow()`（此时没有 preload，`startup.js` 报 `Cannot read properties of undefined (reading 'locale')`，属预期） |
-| R21 | 打包产物（GUI 子系统进程）不产出任何 stdout | win-unpacked 的 exe 没有控制台：`ELECTRON_ENABLE_LOGGING=1` 也不进重定向文件（实测两趟都是 2 字节空日志）。**对策**：改用 `DSH_DESKTOP_DIAGNOSTIC_FILE` 让主进程把启动阶段写进文件；`scripts/smoke-packaged.mjs` 就是按这个判据判通过的 |
-| R22 | 打包产物的启动冒烟怎么判「真的到了应用页」 | 判据两条：① 诊断文件出现 `phase=application-page`（主进程推进到应用页的直接事实；Host 起不来时页面停在 `dsh-app://shell/startup.html`，不会有这一行）② profile 自包含（`package.json`、`pnpm-workspace.yaml`、`node_modules`、`desktop-runtime-state.json` 都在）。**实测**：冷启动（空 home）~6.4s 到 ready、~7s 到应用页；复用同一 home 的温启动 ~2.5s。本机（Node v24.13.0）复跑又测得：冷启动 ~5.4s 到 ready、~5.8s 到应用页，温启动 ~5.2s（与机器负载相关）。命令：`node scripts/smoke-packaged.mjs [超时秒数]`，日志落 `.cache/runs/packaged-smoke.log`、诊断落 `$DSH_HOME/diagnostic.log` |
-| R23 | 打包产物报「找不到模块」才算到应用页 | `tsdown` 会把 `../local/features/*.mjs` 重写成 `lib/local/features/*.mjs`，所以 ① `tsdown.config.ts` 要把**运行期**用到的功能层文件列进 `deps.neverBundle`（当前是 `profile-recovery.mjs` 与 `diagnostics.mjs` 两个）② `electron-builder.config.mjs` 的 `files` 要加 `local/features/*.mjs`。少任何一条，打包产物会因为解析不到功能层而直接落到启动页。**已知状态**：功能层还有两个只被构建脚本 import 的文件（`build-cache.mjs`、`tarball.mjs`），不在 `neverBundle` 里；实测 `tarball.mjs` 会作为独立文件出现在 `app.asar`（`\local\features\tarball.mjs`），`build-cache.mjs` 不出现。二者都不被运行期代码 import，所以只是多带约 3KB，不影响启动。新增**运行期**功能层文件时必须同步登记 `neverBundle`，否则 `build:lib` 报 `[UNRESOLVED_IMPORT]` |
+| R19 | 加载动画的 PNG 能从 shell 资源里显示吗？ | **已修，但载体搬家了**：旧基线 `apps/desktop/src/main.ts` 的 MIME 表只有 `.css/.html/.js/.svg`，`loading-art.png` 按 `application/octet-stream` 返回，只靠 Chromium 对 `<img>` 的内容嗅探才解码正常（实测 `naturalWidth/Height` = 512×512）——上游若给 shell 资源加 `X-Content-Type-Options: nosniff` 就会破，当时 patch 给 MIME 表加了 `.png: 'image/png'`。**`0.1.6-alpha.2` 起 MIME 表随文档服务搬进 `apps/desktop/src/web-document.ts`，`.png: 'image/png'` 已在上游源码里**，本地那条 MIME patch 随之删除（决策 29）；本地只在这个文件上注入 `/local/` 的加载资源与接线 |
+| R20 | 想验证加载动画真的显示、样式没被挡住 | 加载动画现在挂在官方 BootPage 上（`0.1.6-alpha.2` 起官方删掉了 `renderer/startup.html`，改用网络前端的 BootPage）。dev 模式（3.3）自带主进程 inspector：`fetch('http://127.0.0.1:9229/json/list')` 取 `webSocketDebuggerUrl` 连上，`Runtime.evaluate` 里用 `process.mainModule.require('electron')` 拿 `BrowserWindow`，再 `webContents.executeJavaScript()` 读 `#loading-art` 的 `naturalWidth`、`getComputedStyle().animationName`、隔 0.7s 再读 `transform`（两次不同即在动），`capturePage().toPNG()` 存图。**应用页地址是 `dsh-app://app/`**，动画资源在 `dsh-app://app/local/`（由 `apps/desktop/src/web-document.ts` 的 `/local/` 分支从 `<app>/renderer/local/` 提供，脚本也由它注入 index）；别用 `webContents.loadURL` 抢导航 —— 应用自身在推进导航时会把它中断（`ERR_FAILED (-2)`），要看就自己 `new BrowserWindow()` |
+| R21 | 打包产物（GUI 子系统进程）不产出任何 stdout | win-unpacked 的 exe 没有控制台：`ELECTRON_ENABLE_LOGGING=1` 也不进重定向文件（实测两趟都是 2 字节空日志）。**对策**：改用 `DSH_DESKTOP_DIAGNOSTIC_FILE` 让主进程把启动阶段写进文件；`scripts/smoke-packaged.mjs` 就是按这个判据判通过的。每行是 `<ISO 时间> phase=<阶段>`；**失败阶段还带 ` message=<官方 state.message>`**（折成一行、截断 2000 字符，里面通常就含 Host 的 stderr 尾巴）——进程卡死时对话框根本看不到，只有这一行能说明哪里失败（R30） |
+| R22 | 打包产物的启动冒烟怎么判「真的到了应用页」 | 判据两条：① 诊断文件出现 `phase=application-page`（主进程推进到应用页的直接事实；启动失败时不会有这一行）② profile 初始化完整（官方 `initProfile` 写下的 `package.json`、`pnpm-workspace.yaml`、`cordis.patch.yml` 都在）。**不再要求 `node_modules`**：`0.1.6-alpha.2` 起内置 bundles 从应用自带的 installAnchor 解析，空 profile 本来就没有依赖树，宿主包链接与 `desktop-runtime-state.json` 都已不存在。命令：`node scripts/smoke-packaged.mjs [超时秒数]`，日志落 `.cache/runs/packaged-smoke.log`、诊断落 `$DSH_HOME/diagnostic.log`。**本次未跑**（沙箱限制，见 R11） |
+| R23 | `build:lib` 报 `[UNRESOLVED_IMPORT] Could not resolve '../local/…'`；打包产物报「找不到模块」才算到应用页 | 根因是**发射后深度变了**：`tsc` 把 `src/` 编到 `lib/types/`，官方源码里那句源码相对的 `../local/…` 在打包输入（`lib/types/*.js`）里就多下探一层，指向不存在的 `lib/local/…`。而 `tsdown` 的入口正是发射后的文件，所以**三处登记缺一不可**：① **主进程**（`lib/main.js`，产物落在 `lib/`）用 `tsdown.config.ts` 的 `deps.neverBundle` 保持**外部引用**——运行期从 `lib/` 解析 `../local/…` 正好是 `apps/desktop/local/…`（当前登记 `features/profile-recovery.mjs`、`features/diagnostics.mjs`、`adaptator/profile-packages.mjs`）；② **沙箱 preload 可见的官方文件**必须**内联**（`sandbox: true` 的 preload 运行期不能 require 文件；`locale.ts` 被 `preload-menu` 拉进图里）——给 preload 那几条配置加 `alias`，把说明符按发射后的位置重新相对化（`'../local/features/profile-recovery.mjs'` → `'../../local/features/profile-recovery.mjs'`）；③ `apps/desktop/scripts/electron-builder-config.mjs` 的 `files` 用 `local/**/*.mjs` 把这些文件带进 `app.asar`（顺带把只被构建脚本 import 的 `build-cache.mjs` / `tarball.mjs` 也带上，约 3KB，无害）。**实测**（本机 `node node_modules/tsdown/dist/run.mjs --env.DSH_BUILD_FACE host`）：漏 ① 报 `… in lib/types/main.js`，漏 ② 报 `… in lib/types/locale.js`；补齐后 host 面 4 个产物全部构建通过，`preload-app.cjs` 里内联的只有那两句文案（其余被 tree-shake，无 `node:` 依赖），`lib/main.js` 保留三条 `../local/…` 外部 import（决策 40） |
 | R24 | 阶段 4 的迁移/回退怎么在无 web profile 的机器上验证 | web profile 不存在时功能层判定「无可迁移」并记 `done`（窗口结束），所以 `$DSH_HOME/profiles/web` 缺失的机器上行为等价于「没定制」。要验证迁移路径得自造 web profile 夹具（`package.json` + `pnpm-workspace.yaml`）；`src/features/profile-recovery.test.mjs` 覆盖配置语义、记账与重试边界，接线层由官方 `apps/desktop/tests/main-startup.spec.ts` 的 7 个新用例覆盖。**2026-09-14 在打包产物上实跑通三条**（当时是每轮对账的旧语义，迁移窗口已改为严格一次性）：① 冷启动（home 里只有 `profiles/web`）→ 官方 profile 被建出来 → 迁移 → `pnpm install` → 到应用页；② 插件能装、探针也过、但 Host 起不来（实例：`dsh-whale-widget` 等 `webServer` 服务，桌面端不提供）→ 回退一次 + 重装 → 重试到应用页 + toast；③ 包根本装不出来（不存在的包名）→ `pnpm install` 报 `ERR_PNPM_FETCH_404` → 回退到官方空 profile，应用停在启动页显示诊断，profile 不留砖。**2026-09-15 按严格一次性语义复跑**：冷启动（无 web profile）→ `settle` → 记 `done` → 到应用页；用真实 `~/.dsh/profiles/web`（11 个插件）做夹具 → 迁移在图校验阶段失败（缺 peer / 与内置 dsh 版本不匹配）→ `retry`（第 1、2 次）→ 第 3 次转 `abandoned` → 第 4 次启动跳过迁移、正常到应用页，profile 全程可用（当时暴露的两个缺陷见 R27/R28） |
-| R25 | 打包产物上怎么读到启动页真实显示的报错 | GUI 子系统进程没有 stdout（R21），但可以给 exe 传 `--remote-debugging-port=<port>`：`fetch('http://127.0.0.1:<port>/json/list')` 里找 `dsh-app://shell/startup.html` 那个 target，连它的 `webSocketDebuggerUrl`，用 `Runtime.evaluate` 读 `#title` / `#error` 的 `textContent`。实测据此抓到 `dsh desktop: plugin tree failed to load … pending (waiting for service: webServer)`。注意报错只在页面上停留一两秒（回退重试会把它顶掉），轮询间隔取 250ms 左右 |
+| R25 | 打包产物上怎么读到启动页真实显示的报错 | `0.1.6-alpha.2` 起启动失败不再有启动页：主进程把失败交给原生恢复对话框（`fatal-recovery.ts`）。GUI 子系统进程没有 stdout（R21），但可以给 exe 传 `--remote-debugging-port=<port>` 读应用页里的报错：`fetch('http://127.0.0.1:<port>/json/list')` 找 `dsh-app://app/` 那个 target，连它的 `webSocketDebuggerUrl`，用 `Runtime.evaluate` 读页面上显示的恢复文案。原生对话框本身不在渲染进程里，读它只能靠肉眼或截图 |
 | R26 | 复制过来的 web 插件为什么起不来 | 最典型的一类是**只在 web 组合里成立**的插件：它 `inject` 或等待 `webServer` 这类 Desktop 不提供的服务，于是 Host 报 `plugin tree failed to load … pending (waiting for service: webServer)`。这不是复制链路的缺陷（清单、安装、探针都过了），属于 design 的「插件兼容性校验的能力边界」里「运行时服务/API 变化」那一行——只有真正 boot 才暴露，由快照回退兜底（R24 的第 ② 条）。`docs/desktop-guide.zh.md` 的「已知限制」也记了桌面端不提供 `webServer` |
 | R27 | 迁移重试时报 `ERR_PNPM_OUTDATED_LOCKFILE` | 回退的 `onRepair` 会用「空 profile 的 lockfile」收尾；下次重试迁移时，这个 lockfile 与手写清单必然不同步，而 pnpm 的 frozen lockfile（CI 默认）直接拒绝安装。**对策**：`ensureProfilePackages` 的 install 显式带 `--no-frozen-lockfile`——清单本来就不是包管理器写的，lockfile 必须允许更新 |
 | R28 | 回退报 `desktop profile: refusing to replace unowned package @deepseek-ai/cosmokit` | 迁移来的插件依赖 runtime 也拥有的 `@deepseek-ai/*` 包（`dsh/desktop-runtime.json` 的 `sharedPackages` 有 241 个），pnpm 会把这些依赖实装成真实目录；官方 `unlinkDesktopHostPackages` 发现「记录在案的链接变成了真实目录」就拒绝替换——于是 install 之后的 `prepareProfile` 和回退都失败，profile 卡在半坏状态。**对策**：`ensureProfilePackages` 不再先 unlink（改为整棵 `node_modules` 删除，缺失路径会通过链接检查），并在 install 后把 `sharedPackages` 对应条目逐个清掉，再交官方 `prepareProfile` 重新链接 |
+| R29 | `npm run build` 在打包阶段报 `desktop package: cannot read …\.env.windows; copy …\.env.windows.example and fill in the local settings` | `0.1.6-alpha.2` 起官方打包脚本**只从 `apps/desktop/.env.windows` 读发布设置**，并且会**把进程环境里的同名变量（含 `DSH_DESKTOP_APP_ID`）滤掉**——所以本地 `build[].env` 里塞 appId 是无效的，文件不存在就直接报错退出。该文件被官方 gitignore（`git clean -fd` 不会删）。**对策**：配置加顶层 `appId` 与 `releaseEnv[{template,file}]`；构建第 3 步只在文件**不存在**时按官方模板生成，把 `DSH_DESKTOP_APP_ID` 写成配置值，已存在的一律不动（要真签名就在那里填凭据）。实测：生成的内容喂给官方 `loadDesktopPackageEnvironment` + `validateDesktopPackageEnvironment(…, { unsigned: true })` 通过（appId / autoUpdateEnv / policy origin 全部解析）；`git check-ignore` 确认它被忽略，跨构建保留 |
+| R30 | 打包产物启动后**窗口发虚、点不动** | **那是主进程卡死，不是分辨率问题**：窗口不再重绘，Windows/DWM 显示最后一帧（看起来像被拉过的「幽灵窗口」），输入也进不去。判据两条：① 诊断文件（R21）出现 `phase=error message=<官方文本>`；② Windows 事件日志里有 `Application Hang`／WER `AppHangB1`（`Get-WinEvent -FilterHashtable @{LogName='Application'} \| Where-Object Message -match 'Harness'`）。实测（2026-09-19）：`starting → ready → application-page` 只用 3 秒，**22 秒后**记 `phase=error`，同一秒 Windows 记 `AppHangB1`——所以「糊 + 点不动」是同一个原因。**分辨率这条线可以放下**：本机 `HKCU\...\AppCompatFlags\Layers` 里没有该 exe 的覆盖、exe 自带 DPI manifest（`dpiAware`/`requestedExecutionLevel`）、上游全仓没有 `force-device-scale-factor`／`zoomFactor`／`setZoomFactor`，原始截图 1277x843 与窗口 1280x840 的客户区 1:1 |
+| R31 | 桌面端**界面完全模糊 + 点不动**，但进程 `Responding=True`、诊断文件只到 `application-page`（没有 error） | 根因是**壳自己的更新弹窗没内容**：`createUpdateOverlay()`（上游 `apps/desktop/src/update-overlay.ts`）一建窗口就给父窗口注入 `body { filter: blur(2px) !important }`，**只在遮罩窗口关闭时才移除**；而它是 `modal: true` 的子窗口，会挡住父窗口的输入。上游协议处理器只服务 `dsh-app://app/*`，`dsh-app://shell/update-dialog.html` → **404 空文档** → 遮罩窗口透明看不见、却是模态 → 「整页模糊 + 完全不能操作」。**判据**（在跑着的产物里实测）：① CDP `Runtime.evaluate` 读 `getComputedStyle(document.body).filter` = `blur(2px)`，且 `CSS.getMatchedStylesForNode` 报 `selector: body` / `origin: injected`（JS 注入，不是 CSS 文件）；② 在应用页里 `fetch('dsh-app://shell/update-dialog.html')` → 404 / 0 字节（`dsh-app://app/local/*` 是 200）；③ CDP target 里存在 `dsh-app://shell/update-dialog.html`，其 `document.body.innerHTML` 为空。**对策**：patch 给协议处理器补 `hostname === 'shell'` 分支，从 `app.getAppPath()/renderer` 提供这些文档（与本地启动资源同目录）。修后实测：`shell/update-dialog.html` 200 / 963 字节、`shell/update-dialog.css` 200、`bodyFilter=none`、截图清晰、`Responding=True`，且不再残留空遮罩窗口 |
+| R32 | 启动桌面端就弹「更新需要登录飞书」（源码构建的本地应用） | 打包脚本把 `.env.windows` 解析出的策略写进了 app 清单：`electron-builder-config.mjs` 的 `extraMetadata.dshMandatoryUpdatePolicy`，官方模板里 `DSH_DESKTOP_AUTO_UPDATE_ENV=test` → `authentication: 'feishu-test'`。壳在 `app.isPackaged` 时读这个清单字段（`main.ts`）→ 建 `DesktopPolicyTestAuth` 并 `check('launch')`，需要登录时就弹飞书登录窗（`messages.policyLoginTitle`，`policy-test-auth.ts`）；同一段策略逻辑还会建 R31 那个空遮罩窗口，两者一起出现，用户看到的就是「登录框 + 界面糊住」。**判据**：`resources/app/package.json` 里有 `dshMandatoryUpdatePolicy{origin: https://harness-test.deepseek.com, authentication: feishu-test}`；CDP target 里多出 `dsh-app://shell/update-dialog.html`。**对策**：patch 把该字段从 `extraMetadata` 摘掉（只留 `dshDesktopAppId`）——`resolveDesktopPolicyConfig(undefined)` 返回 `undefined`，强制更新/策略登录整块不进入；策略仍由 `.env.windows` 在 `beforePack` 校验。修后实测：清单无该字段时启动的 CDP target 只有 `dsh-app://app/`、`bodyFilter=none`、`Responding=True` |
+| R33 | 打包产物的 exe 图标与本地品牌图不一致 / 想换应用图标 | 图标不走「生成脚本」这条路：应用图标源图是 `assets/dsh-impact.jpg`，转出的 `assets/dsh-impact.png` 由配置的 `copy` 覆盖上游 `apps/desktop/resources/icon-windows.png`，官方 `electron-builder-config.mjs` 两处引用它（`files` 里作为 `icon.png` 带入产物、win 目标作 exe `icon`），所以在 `assets/` 换图即换掉整个应用的图标。判据：构建后产物 `resources/app/icon.png` 与 `assets/dsh-impact.png` 逐字节相同；`scripts/make-icons.py` 生成的 `assets/icon.png` 只用于加载动画（`loading-art.png`），与 exe 图标无关 |
+
 
 ## 3. 复刻命令
 
@@ -83,7 +89,7 @@ cd deepseek-harness && pnpm install --frozen-lockfile
 
 ```bash
 cd <仓库根>
-node scripts/build.mjs           # 读配置 → 校验提交 → 清理并 checkout → 复制 → 打 patch → 执行构建指令
+node scripts/build.mjs           # 读配置 → 解析 tag → 清理并 checkout → 复制 → 打 patch → 执行构建指令
 npm run apply                    # 同上，但在「打 patch」之后停下（第 1–5 步），不执行构建指令
 ```
 
@@ -91,10 +97,17 @@ npm run apply                    # 同上，但在「打 patch」之后停下（
 
 | 步 | 依据配置字段 | 说明 |
 |---|---|---|
-| 校验并 checkout | `checkout` | 提交不存在即报错退出 |
-| 复制定制文件 | `copy[{from,to}]` | 适配层与功能层的独立文件复制到目标位置 |
+| 解析 tag 并 checkout | `tag` | 在上游把 tag 解析成提交（`git rev-parse --verify '<tag>^{commit}'`）后 checkout；解析不到即报错退出（不自动 fetch、不退回当前 HEAD） |
+| 补齐打包本地设置 | `appId`、`releaseEnv[]` | 目标文件缺失时按官方模板生成，`DSH_DESKTOP_APP_ID` 写成配置的 `appId`；已存在的不动（R29） |
+| 搬运产物 | `build[].artifacts{from,to}` | 该条构建指令成功后，把 `from`（相对源仓库根）**复制**到 `to`（相对本仓库根）；`to` 先整体删掉再复制，所以 `release/` 里永远是本次构建的产物，源仓库里的原件保留（以产物为输出的缓存阶段下一轮照常命中）。`smoke-packaged.mjs` 读同一个字段找产物，不写死路径（决策 41） |
+| 复制定制文件 | `copy[{from,to}]` | 适配层与功能层的独立文件复制到目标位置；本地品牌资源也走这里：`assets/dsh-impact.png` → `apps/desktop/resources/icon-windows.png`（官方打包脚本把它同时用作产物图标与 exe 图标，所以覆盖它即换掉整个应用的图标） |
 | 打 patch | `patches[]` | 把已封装能力调度进官方流程（不实现功能），见决策 4 |
 | 构建 | `build[{cwd,command}]` | 在源仓库执行，命令与参数不在脚本里硬编码 |
+
+换应用图标是纯 `copy` 的事（不必改脚本）：源图是 `assets/dsh-impact.jpg`，转出的 `assets/dsh-impact.png` 覆盖
+上游 `apps/desktop/resources/icon-windows.png`——转换在仓库外做一次，仓库里只留转换后的 PNG；
+`scripts/make-icons.py` 是另一条线，它从 `assets/whale-girl-source.png` 生成加载动画用的
+`assets/icon.png`/`icon.ico`，与 exe 图标无关（R33）。
 
 构建期间必须注意：输出重定向到文件（R5）、设置 `DSH_DESKTOP_APP_ID` 与 `npm_execpath`（R8）、
 镜像通过 `DSH_LOCAL_NPM_REGISTRY` 传入（R10）、在可 spawn 子进程的环境运行（R11）、
@@ -231,14 +244,16 @@ pnpm install --frozen-lockfile
 
 | 对象 | 方式 |
 |---|---|
-| 适配层（进程内） | `src/adaptator/smoke.test.mjs`（4 例：清单冻结、与上游 fixture 的 `check*()` 调用顺序对账、跳过提示行格式、标识原样输出）。对账直接读 `deepseek-harness/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs`，上游 clone 不在场时该例 `skip`（其余 3 例照跑）；官方改检查项清单或顺序时由本层测试先失败。跳过提示的格式是本仓库定义的（上游 fixture 原本缺失即抛错，没有跳过文案），`formatSmokeSkipLine` 只保证它能直接写 stdout |
+| 适配层（进程内） | `src/adaptator` 无独立测试文件，靠被功能层带测（`diagnostics-signals.mjs` 的顺序与判据由 `features/diagnostics.test.mjs` 的 16 条上游真实错误串覆盖；`profile-layout.mjs` 由 `profile-recovery.test.mjs` 覆盖） |
+| 三层腐败门限 | `npm run check:layers`（构建第 0 步也会跑）。规则、级别、豁免与盲区见 design §4.3；**门限自己有负样本单测** `scripts/check-layers.test.mjs`（28 例：每条硬规则一个好/坏样本、白名单两种失效、注释里的官方文案不算耦合、本仓库当前状态必须通过），挂在 `npm test` 里 |
 | 功能层（进程内） | 纯函数单测（`node --test`，显式路径），不依赖 Electron 与官方代码 |
 | 功能层（tarball 读取） | 拿 `packed/` 里的真实 tarball 逐一双跑「外部 `tar -tzf` / `tar -xOzf`」与进程内 `listTarballEntries` / `readTarballManifest`，断言条目列表与 manifest 完全一致（实测 277/277），再比 `desktop-packages.json` 的 sha256 不变 |
-| 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM 按接线顺序跑两个经典脚本，断言插入位置、可见性切换、「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
-| patch 层 | `git apply --check` + 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了启动页或接线再跑官方用例：在**源仓库根**执行 `node_modules/.bin/vitest run apps/desktop/tests/startup-renderer.spec.ts apps/desktop/tests/main-startup.spec.ts`（**实测 28/28**：渲染 8 + 主进程接线 20，含本地新增的 7 例；在 `apps/desktop` 目录里跑会因 include 规则匹配不到而报 `No test files found`） |
+| 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM（含假 `MutationObserver`）按接线顺序跑两个经典脚本，**再照 patch 的接线方式订阅**（`onFailed(dshLoadingArt.sync)`），断言「官方启动页出现前收起、出现后展示、加载标记消失即收起、启动页被移除后跟着离开文档」，以及「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
+| patch 层 | `git apply --check`（12 个 patch 逐个 + 联合 apply 全通过）+ 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了接线再跑官方用例：在**源仓库根**执行 `node_modules/.bin/vitest run apps/desktop/tests/main-startup.spec.ts`（**本次未跑**：沙箱里 vite 起不来，见 R11；替代证据是 `tsc -b tsconfig.host.json` 对该文件零报错） |
+| 独立文件的打包输入（R23/决策 40） | 在**源仓库根**跑 workspace 面打包：`node node_modules/tsdown/dist/run.mjs --env.DSH_BUILD_FACE host`（用 `--env.` 传 face，等价于上游 `build:lib:host` 的后半段）。判据：exit 0 + `apps/desktop` 四个产物构建完成 + `lib/preload-app.cjs` 里没有 `require('../local/…')` 也没有 `node:` 依赖、`lib/main.js` 保留 `../local/…` 外部 import。**只跑 `apply` 或门限看不出这一类** |
 | 加载动画（视觉） | dev 模式 + R20 的 inspector 读法：`naturalWidth` 证明图片解码、`animationName`/两次 `transform` 证明 CSS 动画在跑、`styleElements`/`style` 属性为 0 证明没碰内联样式 |
-| 阶段 4（迁移 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（26 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退三步、回退文案、**迁移记账与严格一次性**）+ 官方 `apps/desktop/tests/main-startup.spec.ts` 的 7 个新用例（迁移接线顺序、settle、skip、放弃复制、回退一次后停手、诊断上页、dev 不碰 desktop profile） |
-| 阶段 5（诊断规则，功能层） | `src/features/diagnostics.test.mjs`（9 例：每条规则命中上游真实错误串、阶段不串、覆盖表一致、未命中返回 null、AggregateError 展开、不可恢复提示、格式化保留原始串、诊断文件行格式与写失败兜底、错误出口命中与退回） |
-| 打包产物（冒烟） | `node scripts/smoke-packaged.mjs`：见 R22/R23，冷启动与温启动各实测通过 |
+| 阶段 4（迁移 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（26 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退两步、回退文案、**迁移记账与严格一次性**）+ `main-startup.spec.ts.patch` 新增的 7 个用例（迁移接线顺序、settle、skip、放弃复制、回退一次后停手、诊断进原生对话框、dev 不碰 desktop profile）。**本次未跑 vitest**（沙箱限制，见 R11） |
+| 阶段 5（诊断规则，功能层） | `src/features/diagnostics.test.mjs`（8 例：每条规则命中上游真实错误串、阶段不串、覆盖表一致、未命中返回 null、AggregateError 展开、格式化保留原始串、诊断文件行格式与写失败兜底、错误出口命中与退回） |
+| 打包产物（冒烟） | `node scripts/smoke-packaged.mjs [超时秒数]`：产物位置由配置的 `build[].artifacts.to` 决定（当前 `release/win-x64/win-unpacked/`），见 R22/R23。**本沙箱跑不完**：脚本能按配置找到并启动搬过来的 exe，但 Chromium 起不来（`Lock file can not be created: 拒绝访问`、`mojo platform_channel Check failed: 拒绝访问`——沙箱不给命名管道与锁文件，见 R11），所以「到了应用页」这一条只能在正常环境上判 |
 | 整体闭环 | 按配置执行完整流程后，产物可正常启动；源仓库仍能 `checkout` 到配置指定的提交 |
 | 构建时间优化 | 连续两次构建，第二次显著更快；只改页面/资源类文件时不触发全量编译（见 design 的[构建脚本时间优化](design.zh.md#41-构建脚本时间优化已实施)）。**另外看缓存决策行**：稳态必须 `build-cache: … hit` 全命中、0 miss —— 曾经出现过「全命中但仍要 20 分钟」的情况，原因是外部 `tar` 进程（见[构建缓存的实现与实测](#4-构建缓存的实现与实测)），所以「命中率」与「耗时」要同时看 |

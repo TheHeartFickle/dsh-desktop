@@ -1,0 +1,29 @@
+diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
+index d7fe1d7fca..7984bf6186 100644
+--- a/apps/desktop/src/web-document.ts
++++ b/apps/desktop/src/web-document.ts
+@@ -8,6 +8,15 @@ const MIME: Readonly<Record<string, string>> = {
+   '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon',
+ }
+ const BOOT = '<script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()</script>'
++// Local customization: the shell's own loading art for the official boot page (docs/design.zh.md
++// §4.2 ①). Everything is served from the same origin under `/local/`; the two classic scripts
++// assemble through the globals `dshStartupPage` / `dshLoadingArt` and must exist before the boot
++// page is built, so they are injected with the boot gate itself. The third statement is the
++// wiring: subscribe to the boot state the adapter owns and hand it to the feature's own entry, so
++// the feature layer never learns the official structure nor a new adapter API.
++const LOADING_ART = '<link rel="stylesheet" href="/local/loading-art.css">'
++  + '<script src="/local/startup-page.js"></script><script src="/local/loading-art.js"></script>'
++  + '<script>dshStartupPage.onFailed(dshLoadingArt.sync)</script>'
+ 
+ /**
+  * Read an application-owned static asset; the index waits for asynchronous Host injections.
+@@ -29,7 +38,7 @@ export async function serveWebDocument(request: Request, root: string): Promise<
+     throw error
+   }
+   const content = pathname === '/' || pathname === '/index.html'
+-    ? body.toString().replace('<head>', '<head>' + BOOT) : new Uint8Array(body)
++    ? body.toString().replace('<head>', '<head>' + BOOT + LOADING_ART) : new Uint8Array(body)
+   return new Response(request.method === 'HEAD' ? null : content, {
+     headers: { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' },
+   })

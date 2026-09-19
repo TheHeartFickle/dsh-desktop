@@ -61,8 +61,8 @@ export function applyWebProfileCopy(desktopProfile: string, plan: WebProfileCopy
 export function snapshotProfile(options: { readonly profile: string; readonly fs?: unknown }): ProfileSnapshot
 
 /**
- * 还原快照并重建 profile（还原文件 → 重建依赖 → 刷新宿主包链接）。
- * @param options - profile、快照与 `onRepair`（交给宿主的重建能力）。
+ * 还原快照并重建 profile（还原文件 → 交给 `onRepair` 重建依赖）。
+ * @param options - profile、快照与 `onRepair`（重建依赖的能力）。
  * @returns 还原/删除的文件名。
  */
 export function rollbackProfile(options: {
@@ -75,7 +75,8 @@ export function rollbackProfile(options: {
 
 /**
  * 在 desktop runtime 的 Node 里逐个 `import()` 插件，返回失败描述。
- * @param options - profile、插件名与 runtime 的 Node 可执行文件。
+ * @param options - profile、插件名与 runtime 的 Node 可执行文件（Electron 可执行文件即可，本层用
+ *   `ELECTRON_RUN_AS_NODE` 启动它）。
  * @returns 失败描述列表；为空即通过。
  */
 export function installProbeFailures(options: {

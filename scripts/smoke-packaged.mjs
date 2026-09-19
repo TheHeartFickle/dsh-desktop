@@ -16,9 +16,6 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '..')
-const UNPACKED = join(REPO_ROOT, 'deepseek-harness', 'apps', 'desktop', '.desktop-build',
-  'targets', 'win-x64', 'unsigned-artifacts', 'win-unpacked')
-const EXECUTABLE = join(UNPACKED, 'DeepSeek Harness.exe')
 const HOME = join(REPO_ROOT, '.cache', 'smoke-home')
 const LOG = join(REPO_ROOT, '.cache', 'runs', 'packaged-smoke.log')
 const DIAGNOSTIC = join(HOME, 'diagnostic.log')
@@ -31,6 +28,13 @@ function fail(message) {
   process.exit(1)
 }
 
+// 产物在构建结束时被 build.mjs 按配置复制进本仓库（`build[].artifacts.to`），这里跟着配置走，不写死路径。
+const CONFIG = JSON.parse(readFileSync(join(REPO_ROOT, 'src', 'build.config.json'), 'utf8'))
+const ARTIFACTS = CONFIG.build.find(entry => entry.artifacts !== undefined)?.artifacts
+if (ARTIFACTS === undefined) fail('配置 src/build.config.json 缺少 build[].artifacts：无法确定打包产物位置')
+const UNPACKED = join(REPO_ROOT, ARTIFACTS.to, 'win-unpacked')
+const EXECUTABLE = join(UNPACKED, 'DeepSeek Harness.exe')
+
 if (!existsSync(EXECUTABLE)) fail(`打包产物不存在: ${EXECUTABLE}（先跑 node scripts/build.mjs）`)
 mkdirSync(dirname(LOG), { recursive: true })
 mkdirSync(HOME, { recursive: true })
@@ -40,9 +44,11 @@ rmSync(DIAGNOSTIC, { force: true })
 /**
  * 判定依据（两条都要满足，见 docs/reproduce.zh.md R22；打包产物是 GUI 子系统进程，没有可用 stdout，
  * 所以只看它写出的文件）：
- * - 诊断文件出现 `phase=application-page`：主进程推进到应用页的直接事实。Host 起不来时页面停在
- *   `dsh-app://shell/startup.html`，不会有这一行。
- * - profile 自包含：包清单、工作区配置、宿主包链接目录、运行时状态文件都在。
+ * - 诊断文件出现 `phase=application-page`：主进程推进到应用页的直接事实；启动失败时不会有这一行
+ *   （失败走 `reportFatal()` 的原生恢复对话框，页面停在 `dsh-app://app/` 的 BootPage）。
+ * - profile 初始化完整：官方 `initProfile` 写下的三份文件都在。**不再要求 `node_modules`**：
+ *   `0.1.6-alpha.2` 起内置 bundles 从应用自带的 installAnchor 解析，空 profile 本来就没有依赖树
+ *   （旧基线的宿主包链接与 `desktop-runtime-state.json` 都已不存在）。
  */
 const APPLICATION_PAGE_PHASE = 'phase=application-page'
 const FATAL_PATTERNS = [
@@ -53,7 +59,7 @@ const FATAL_PATTERNS = [
 
 function profileComplete() {
   const profile = join(HOME, 'profiles', 'desktop')
-  return ['package.json', 'pnpm-workspace.yaml', 'node_modules', 'desktop-runtime-state.json']
+  return ['package.json', 'pnpm-workspace.yaml', 'cordis.patch.yml']
     .every(entry => existsSync(join(profile, entry)))
 }
 

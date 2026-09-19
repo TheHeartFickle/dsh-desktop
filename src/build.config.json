@@ -1,7 +1,14 @@
 {
   "upstream": "deepseek-harness",
   "upstreamUrl": "https://github.com/deepseek-ai/deepseek-harness.git",
-  "checkout": "c291e7961a515f6d7af9304e7fd1d257929aef26",
+  "tag": "dsh-v0.1.6-alpha.2",
+  "appId": "ai.deepseek.dsh.desktop",
+  "releaseEnv": [
+    {
+      "template": "apps/desktop/.env.windows.example",
+      "file": "apps/desktop/.env.windows"
+    }
+  ],
   "copy": [
     {
       "from": "adaptator",
@@ -21,19 +28,23 @@
     },
     {
       "from": "adaptator/renderer/startup-page.js",
-      "to": "apps/desktop/renderer/startup-page.js"
+      "to": "apps/desktop/renderer/local/startup-page.js"
     },
     {
       "from": "features/renderer/loading-art.js",
-      "to": "apps/desktop/renderer/loading-art.js"
+      "to": "apps/desktop/renderer/local/loading-art.js"
     },
     {
       "from": "features/renderer/loading-art.css",
-      "to": "apps/desktop/renderer/loading-art.css"
+      "to": "apps/desktop/renderer/local/loading-art.css"
     },
     {
       "from": "../assets/icon.png",
-      "to": "apps/desktop/renderer/loading-art.png"
+      "to": "apps/desktop/renderer/local/loading-art.png"
+    },
+    {
+      "from": "../assets/dsh-impact.png",
+      "to": "apps/desktop/resources/icon-windows.png"
     }
   ],
   "patches": [
@@ -50,8 +61,8 @@
       "target": "apps/desktop/tsdown.config.ts"
     },
     {
-      "file": "patch/electron-builder.config.mjs.patch",
-      "target": "apps/desktop/electron-builder.config.mjs"
+      "file": "patch/electron-builder-config.mjs.patch",
+      "target": "apps/desktop/scripts/electron-builder-config.mjs"
     },
     {
       "file": "patch/build.ts.patch",
@@ -74,16 +85,8 @@
       "target": "apps/desktop/scripts/prepare-package-set.ts"
     },
     {
-      "file": "patch/runtime-payload-smoke.mjs.patch",
-      "target": "apps/desktop/tests/fixtures/runtime-payload-smoke.mjs"
-    },
-    {
-      "file": "patch/startup.html.patch",
-      "target": "apps/desktop/renderer/startup.html"
-    },
-    {
-      "file": "patch/startup.js.patch",
-      "target": "apps/desktop/renderer/startup.js"
+      "file": "patch/web-document.ts.patch",
+      "target": "apps/desktop/src/web-document.ts"
     },
     {
       "file": "patch/locale.ts.patch",
@@ -109,8 +112,11 @@
         "apps/desktop/renderer",
         "apps/desktop/local"
       ],
+      "artifacts": {
+        "from": "apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts",
+        "to": "release/win-x64"
+      },
       "env": {
-        "DSH_DESKTOP_APP_ID": "ai.deepseek.dsh.desktop",
         "DSH_LOCAL_NPM_REGISTRY": "https://registry.npmmirror.com"
       }
     }

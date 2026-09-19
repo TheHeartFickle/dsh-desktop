@@ -1,46 +1,53 @@
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index a73a6223a5..fa452fdbf0 100644
+index d5bfb1e0b3..2a69c045cc 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -1,7 +1,7 @@
+@@ -2,7 +2,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
  /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
  
  import { readFile, writeFile } from 'node:fs/promises'
--import { extname, join, normalize, resolve, sep } from 'node:path'
-+import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
+-import { join } from 'node:path'
++import { dirname, join } from 'node:path'
  import { fileURLToPath } from 'node:url'
  import {
    app,
-@@ -22,6 +22,12 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
- import { DesktopUpdateCoordinator } from './update-coordinator.ts'
- import { desktopErrorState } from './startup-error.ts'
- import { startupFailureDocument } from './startup-document.ts'
+@@ -39,6 +39,13 @@ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
+ import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
+ import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
+ import { readDesktopRuntime } from './runtime-tree.ts'
 +import {
-+  applyWebProfileCopy, copyFailureMessage, installProbeFailures, recordMigrationFailure, rollbackProfile,
-+  ROLLBACK_RETRY_FAILURE, ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript, webProfileMigration,
-+  writeMigrationRecord,
++  applyWebProfileCopy, copyFailureMessage, installProbeFailures, recordMigrationFailure,
++  rollbackProfile, ROLLBACK_RETRY_FAILURE, ROLLBACK_RETRY_NOTICE, snapshotProfile, startupNoticeScript,
++  webProfileMigration, writeMigrationRecord,
 +} from '../local/features/profile-recovery.mjs'
++import { installProfilePackages } from '../local/adaptator/profile-packages.mjs'
 +import { APPLICATION_PAGE_PHASE, recordStartupPhase, startupErrorState } from '../local/features/diagnostics.mjs'
  
- const SCHEME = 'dsh-app'
  let focusPrimaryWindow = (): void => {}
-@@ -58,6 +64,9 @@ const MIME: Readonly<Record<string, string>> = {
-   '.css': 'text/css; charset=utf-8',
-   '.html': 'text/html; charset=utf-8',
-   '.js': 'text/javascript; charset=utf-8',
-+  // Local customization: the loading art is a PNG. Serving it as octet-stream would leave the image
-+  // to content sniffing, which an upstream `X-Content-Type-Options: nosniff` would break.
-+  '.png': 'image/png',
-   '.svg': 'image/svg+xml',
+ let stopForRecovery = async (): Promise<void> => {}
+@@ -64,7 +71,13 @@ const recovery = new DesktopFatalRecovery({
+ function reportFatal(error: unknown): void {
+   console.error(error)
+   if (shuttingDown) return
+-  void recovery.report(error).catch((failure: unknown) => { console.error(failure); app.exit(1) })
++  // Local customization: the feature layer decides whether the failure matches a known stage, and
++  // falls back to the official text when it does not (diagnosis only adds, never hides the truth).
++  // The official fatal dialog always offers to disable third-party plugins, so recovering the profile
++  // from inside the application is always available for this shell.
++  const diagnosed = startupErrorState(error, { profileRecovery: true, fallback: desktopErrorState })
++  void recovery.report(new Error(diagnosed.message, { cause: error }))
++    .catch((failure: unknown) => { console.error(failure); app.exit(1) })
  }
  
-@@ -153,6 +162,67 @@ async function main(): Promise<void> {
-   const development = app.isPackaged ? undefined : join(app.getAppPath(), '.desktop-build', 'development', 'project')
-   const activeProject = development ?? paths.profile
+ protocol.registerSchemesAsPrivileged([{
+@@ -190,6 +203,65 @@ async function main(): Promise<void> {
+   const development = !app.isPackaged
+   const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
-+  // Local customization (feature layer: apps/desktop/local/features/profile-recovery.mjs). Package
-+  // state always changes through the manager; the feature layer owns which files are copied,
-+  // snapshotted, and restored, while every rebuild or host-link refresh goes through the manager.
++  // Local customization (feature layer: apps/desktop/local/features/profile-recovery.mjs). The
++  // one-time web profile migration moves configuration semantics, never the directory: the feature
++  // layer owns which files are copied, snapshotted, and restored, while every package rebuild goes
++  // through the feature layer's installProfilePackages.
 +  const webProfile = join(dirname(paths.profile), 'web')
 +  let webProfileBaseline: ReturnType<typeof snapshotProfile> | undefined
 +  let copiedProfile = false
@@ -48,14 +55,19 @@ index a73a6223a5..fa452fdbf0 100644
 +  // nor reinstalls again, and a failure after that point is a Host failure like any other.
 +  let retryingCopiedProfile = false
 +  let rollbackHandled = false
++  const rebuildProfilePackages = async (): Promise<void> => {
++    installProfilePackages({ profile: paths.profile, node: resources.node, pnpm: resources.pnpm, nodeBin: resources.nodeBin })
++  }
++  /** Whether a copied profile is still held and has not been rolled back yet. */
++  const rollbackPending = (): boolean => copiedProfile && !rollbackHandled && webProfileBaseline !== undefined
 +  /**
 +   * Run the one-time web profile migration for this desktop profile. The feature layer decides
 +   * whether the window is still open: `skip` for a profile that was already settled, `settle` when
 +   * there is nothing to migrate (no web plugins, a profile the user has taken over, or content that
 +   * already matches), and `migrate` with the plan otherwise.
 +   *
-+   * Only packaged runs call this. A development run starts from its own project directory and never
-+   * reads the desktop profile, so copying there would create a profile the run does not use.
++   * Only packaged runs call this: a development run shares the Harness home with `dsh web`, so
++   * copying there would migrate configuration into a profile it does not own.
 +   */
 +  const copyWebProfile = async (): Promise<void> => {
 +    // The migration reads the desktop manifest, so the official profile has to exist first; on a
@@ -74,70 +86,54 @@ index a73a6223a5..fa452fdbf0 100644
 +    copiedProfile = true
 +    // Every failure after the files are written -- installing the new manifest as much as the probe --
 +    // means the copied configuration is unusable, and both restore the pre-copy profile. The attempt
-+    // is counted, so three consecutive failures stop the retries instead of failing every start.
++    // is counted, so consecutive failures stop the retries instead of failing every start.
 +    let failures: readonly string[]
 +    try {
-+      await manager.ensureProfilePackages(paths.profile)
++      await rebuildProfilePackages()
 +      failures = installProbeFailures({ profile: paths.profile, plugins: plan.plugins, node: resources.node })
 +    } catch (error) {
 +      copiedProfile = false
-+      await rollbackProfile({
-+        profile: paths.profile,
-+        snapshot: baseline,
-+        onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
-+      })
++      await rollbackProfile({ profile: paths.profile, snapshot: baseline, onRepair: rebuildProfilePackages })
 +      recordMigrationFailure({ profile: paths.profile })
 +      throw error
 +    }
 +    if (failures.length === 0) return
 +    copiedProfile = false
-+    await rollbackProfile({
-+      profile: paths.profile,
-+      snapshot: baseline,
-+      onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
-+    })
++    await rollbackProfile({ profile: paths.profile, snapshot: baseline, onRepair: rebuildProfilePackages })
 +    recordMigrationFailure({ profile: paths.profile })
 +    throw new Error(copyFailureMessage(failures))
 +  }
-   profileRecoveryAvailable = () => development === undefined && manager.canRecoverProfile()
-   let pageError: Extract<DesktopBackendState, { phase: 'error' }> | undefined
    let quitting = false
-@@ -196,6 +266,7 @@ async function main(): Promise<void> {
-     return state.phase === 'error' ? { ...state, profileRecovery: profileRecoveryAvailable() } : state
-   }
-   const publishBackend = (state: DesktopBackendState): void => {
-+    recordStartupPhase(process.env, state.phase)
-     for (const window of BrowserWindow.getAllWindows()) {
-       window.webContents.send(DESKTOP_IPC.backendState, state)
+   let startup: Promise<void> | undefined
+   let workspaceRecovery: Promise<void> | undefined
+@@ -271,9 +343,49 @@ async function main(): Promise<void> {
+       updateTasks: (action: 'inspect' | 'lock' | 'unlock') => host.updateTasks(action),
      }
-@@ -213,9 +284,50 @@ async function main(): Promise<void> {
    }, (state) => {
-     if (state.phase === 'starting' && !emergencyDocument) pageError = undefined
-     publishBackend(backendState())
--    if (state.phase === 'error') void navigateMain(startupUrl).catch((error: unknown) => { console.error(error) })
-+    if (state.phase === 'error' && !rollbackHandled) {
-+      // The controller reports a failure after its own cleanup settles, which can be later than
-+      // the startup promise rejecting. Both paths call this guarded retry; only the first acts.
-+      void retryAfterRollback()
-+    }
+-    if (state.phase === 'error') reportFatal(new Error(state.message))
++    // Local customization: the diagnostic file is the only startup evidence a packaged GUI process
++    // produces (docs/reproduce.zh.md R21), so every published phase is recorded here -- with the
++    // official text on failure, because a hung process never shows its dialog.
++    recordStartupPhase(process.env, state.phase, state.phase === 'error' ? state.message : undefined)
++    if (state.phase !== 'error') return
++    // A failure after a web profile copy is rolled back once and retried in-process; only a failure
++    // with nothing left to roll back reaches the fatal dialog (`rollbackPending`).
++    if (!rollbackPending()) { reportFatal(new Error(state.message)); return }
++    void retryAfterRollback()
    })
  
 +  /**
-+   * Restore the pre-copy profile after a failed start, rebuild it, and let the caller start once
-+   * more. The retry is bounded to one attempt: a restored profile that still fails cannot be fixed
-+   * by another rollback, so recovery belongs to the startup page. A Host failure after a migration
-+   * means this batch of plugins does not boot here, so the migration is recorded as abandoned and
-+   * later starts do not try it again.
++   * Restore the pre-copy profile after a failed start, rebuild it, and start once more. The retry is
++   * bounded to one attempt: a restored profile that still fails cannot be fixed by another rollback,
++   * so recovery belongs to the fatal dialog. A Host failure after a migration means this batch of
++   * plugins does not boot here, so the migration is recorded as abandoned and later starts skip it.
 +   */
 +  const rollbackCopiedProfile = async (): Promise<boolean> => {
-+    if (!copiedProfile || rollbackHandled || webProfileBaseline === undefined) return false
++    const baseline = webProfileBaseline
++    if (!copiedProfile || rollbackHandled || baseline === undefined) return false
 +    rollbackHandled = true
 +    retryingCopiedProfile = true
-+    await rollbackProfile({
-+      profile: paths.profile,
-+      snapshot: webProfileBaseline,
-+      onRepair: async () => { await manager.ensureProfilePackages(paths.profile) },
-+    })
++    await rollbackProfile({ profile: paths.profile, snapshot: baseline, onRepair: rebuildProfilePackages })
 +    writeMigrationRecord({ profile: paths.profile, status: 'abandoned' })
 +    return true
 +  }
@@ -145,9 +141,8 @@ index a73a6223a5..fa452fdbf0 100644
 +  let retry: Promise<void> | undefined
 +  const retryAfterRollback = (): Promise<void> => {
 +    retry ??= Promise.resolve()
-+      .then(async () => await rollbackCopiedProfile())
-+      .then(async (restored) => {
-+        if (!restored) return
++      .then(async () => {
++        if (!await rollbackCopiedProfile()) return
 +        console.error(ROLLBACK_RETRY_NOTICE)
 +        await backend.stop()
 +        await reconcileBackend()
@@ -159,35 +154,28 @@ index a73a6223a5..fa452fdbf0 100644
 +    return retry
 +  }
 +
-   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
-     updateState = state
-     for (const window of BrowserWindow.getAllWindows()) {
-@@ -248,7 +360,8 @@ async function main(): Promise<void> {
- 
-   const showStartupError = async (error: unknown): Promise<void> => {
-     if (quitting) return
--    pageError = desktopErrorState(error)
-+    // 功能层决定：命中诊断用诊断文本，没命中退回官方原文（诊断只做加法，不挡真相）。
-+    pageError = startupErrorState(error, { profileRecovery: profileRecoveryAvailable(), fallback: desktopErrorState })
-     try { await navigateMain(startupUrl) }
-     catch (navigationError) {
-       await showEmergencyError(new AggregateError([error, navigationError], messages.startupFailed))
-@@ -259,12 +372,25 @@ async function main(): Promise<void> {
+   const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
+   const showUpdateFailure = (state: DesktopUpdateState): Promise<void> => {
+     if (state.phase !== 'error') return Promise.resolve()
+@@ -325,14 +437,32 @@ async function main(): Promise<void> {
+   const reconcileBackend = (): Promise<void> => {
      startup ??= (async () => {
-       pageError = undefined
-       await navigateMain(startupUrl)
-+      if (development === undefined && !copiedProfile && !rollbackHandled && !retryingCopiedProfile) await copyWebProfile()
+       await navigateMain(applicationUrl)
++      // Local customization: the one-time web profile migration finishes before the Host is
++      // prepared, so the official `applyRelease` then cleans and links the migrated manifest in the
++      // same start. The retry after a rollback must not migrate again.
++      if (!development && !copiedProfile && !rollbackHandled && !retryingCopiedProfile) await copyWebProfile()
 +      retryingCopiedProfile = false
        await backend.start(async () => {
-         if (development === undefined) {
-           await manager.applyRelease()
-         }
+         await manager.applyRelease(app.isPackaged)
        })
--      if (backend.host !== undefined) await navigateMain(applicationUrl)
+-      if (backend.host !== undefined) updateJournal?.action('workspace-ready')
+-      // The existing Web document resumes through the boot IPC response.
 +      if (backend.host !== undefined) {
++        updateJournal?.action('workspace-ready')
 +        // The migrated configuration booted here: close the one-time migration window.
 +        if (copiedProfile && !rollbackHandled) writeMigrationRecord({ profile: paths.profile, status: 'done' })
-+        await navigateMain(applicationUrl)
++        // The application page is the last startup phase the packaged smoke check waits for.
 +        recordStartupPhase(process.env, APPLICATION_PAGE_PHASE)
 +        const window = mainWindow
 +        if (rollbackHandled && window !== undefined && !window.isDestroyed()) {
@@ -196,6 +184,33 @@ index a73a6223a5..fa452fdbf0 100644
 +          ).catch(() => undefined)
 +        }
 +      }
-     })().catch(async (error: unknown) => {
-       await showStartupError(error)
+     })().catch((error: unknown) => {
+       updateJournal?.action('workspace-failed')
+-      reportFatal(error)
++      // A copy that is still held belongs to the rollback retry, which owns how that failure
++      // surfaces; only a failure with nothing to roll back reaches the fatal dialog here.
++      if (!rollbackPending()) reportFatal(error)
        throw error
+     }).finally(() => { startup = undefined })
+     return startup
+@@ -397,7 +527,20 @@ async function main(): Promise<void> {
+ 
+   protocol.handle(SCHEME, (request) => {
+     const url = new URL(request.url)
++    // Local customization: the shell's own renderer documents (update dialog, mandatory update,
++    // policy login) live in the same dir as the local boot assets, and the upstream handler serves
++    // only the `app` host. Without this branch those windows load an empty 404 document: the update
++    // overlay stays an invisible `modal: true` child that both blocks the product window and keeps
++    // its injected `body { filter: blur(2px) !important }` in place (docs/reproduce.zh.md R31).
++    if (url.hostname === 'shell') {
++      return serveWebDocument(request, join(app.getAppPath(), 'renderer'))
++    }
+     if (url.hostname === 'app') {
++      // Local customization: the shell's own boot-page assets live beside the application, not in
++      // the Web frontend dist (docs/design.zh.md §4.2 ①).
++      if (url.pathname.startsWith('/local/')) {
++        return serveWebDocument(request, join(app.getAppPath(), 'renderer'))
++      }
+       if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/')
+         || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) {
+         return serveWebDocument(request, join(resources.dsh, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist'))

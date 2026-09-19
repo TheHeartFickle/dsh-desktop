@@ -1,30 +1,9 @@
 diff --git a/apps/desktop/src/project-manager.ts b/apps/desktop/src/project-manager.ts
-index a91c6af6b2..3929b511a0 100644
+index af7804e1a5..d3a6845afd 100644
 --- a/apps/desktop/src/project-manager.ts
 +++ b/apps/desktop/src/project-manager.ts
-@@ -1,6 +1,5 @@
- /** In-place owner of the reserved desktop profile and its private pnpm state. */
- 
--import { valid } from 'semver'
- import { spawn } from 'node:child_process'
- import {
-   existsSync,
-@@ -157,9 +156,11 @@ function projectManifest(projectDir: string): DesktopProjectManifest {
-     throw new Error(`desktop project: invalid desktop profile manifest ${path}`)
-   }
-   const manifest = { ...value, dependencies: value.dependencies ?? {} } as unknown as DesktopProjectManifest
-+  // Local customization: keep the declared dependency spec as-is. The web profile this may have been
-+  // copied from uses ranges and git specs, and pnpm resolves them the same way it does for web.
-   if (Object.entries(manifest.dependencies).some(([name, version]) => !PACKAGE_NAME_PATTERN.test(name)
--    || typeof version !== 'string' || valid(version) !== version)) {
--    throw new Error('desktop project: plugin dependencies must use exact registry versions')
-+    || typeof version !== 'string')) {
-+    throw new Error('desktop project: plugin dependencies must map package names to version specs')
-   }
-   return manifest
- }
-@@ -279,6 +280,48 @@ export class DesktopProjectManager {
-     }
+@@ -93,6 +93,15 @@ export class DesktopProjectManager {
+     })
    }
  
 +  /**
@@ -33,42 +12,9 @@ index a91c6af6b2..3929b511a0 100644
 +   * @param projectDir - Profile directory to create.
 +   */
 +  async ensureProfileDirectory(projectDir: string): Promise<void> {
-+    await this.withLock(async () => {
-+      this.descriptor = this.readRuntime()
-+      if (!existsSync(join(projectDir, 'package.json'))) createPluginProfile(projectDir)
-+    })
++    await this.withLock(() => { createPluginProfile(projectDir) })
 +  }
 +
-+  /**
-+   * Make the installed packages match the profile's manifest: rebuild dependencies from scratch and
-+   * refresh the reserved host package links. Restoring files from a snapshot, or writing a manifest
-+   * outside the official package commands, leaves package state stale in ways `applyRelease` cannot
-+   * observe, so the caller uses this instead of that fast path.
-+   * @param projectDir - Profile whose configuration files were just written or restored.
-+   */
-+  async ensureProfilePackages(projectDir: string): Promise<void> {
-+    await this.withLock(async () => {
-+      this.descriptor = this.readRuntime()
-+      if (!existsSync(join(projectDir, 'package.json')) || !existsSync(join(projectDir, 'pnpm-workspace.yaml'))) {
-+        throw new Error('desktop project: restored profile is missing its configuration files')
-+      }
-+      // Remove the whole tree instead of unlinking the recorded host packages first: a previous
-+      // install may already have replaced those links with real directories, and the recorded link
-+      // check refuses to touch anything it does not recognise. A missing tree passes that check.
-+      removeOwnedDirectory(join(projectDir, 'node_modules'))
-+      // The manifest is written outside the package commands, so any lockfile left here is stale by
-+      // construction -- after a rollback it is the empty profile's. pnpm's frozen lockfile (the CI
-+      // default) would refuse the install outright, so ask for the update explicitly.
-+      await this.runPnpm(projectDir, ['install', '--no-frozen-lockfile', '--ignore-scripts'])
-+      // Plugins may depend on packages the runtime also owns, and pnpm then materialises those as
-+      // real directories. Drop those entries so the relink below restores the runtime's own copies.
-+      for (const shared of this.currentRuntime().sharedPackages) {
-+        removeOwnedDirectory(join(projectDir, 'node_modules', ...shared.name.split('/')))
-+      }
-+      await this.finishPackageOperation(projectDir)
-+    })
-+  }
-+
-   /** @returns Whether application resources support profile recovery. */
-   canRecoverProfile(): boolean {
-     return this.descriptor !== undefined && existsSync(this.runtime.node) && existsSync(this.runtime.dsh)
+   private async withLock<T>(operation: () => T | Promise<T>): Promise<T> {
+     mkdirSync(this.paths.profile, { recursive: true, mode: 0o700 })
+     const lockPath = join(realpathSync(this.paths.profile), 'lock')

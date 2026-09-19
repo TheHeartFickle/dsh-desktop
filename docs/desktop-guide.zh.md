@@ -2,6 +2,13 @@
 
 本文记录对 dsh 官方桌面端（上游仓库中的 `apps/desktop`）的探索结论，以及一次其本地构建失败的完整排查过程，供本项目开发参考。
 
+> ⚠️ **本文写于旧基线 `c291e7961a`（`0.1.5-rc.2`），部分内容已被上游改动推翻，尚未整体重写。**
+> 已知失效处：启动页 `renderer/startup.html` / `startup.js` / `startup.css` 已被删除（等待界面改由网络前端
+> BootPage 承担）；桌面插件窗口 `renderer/plugin-manager.html` 已被删除（插件管理改在应用内）；失败出口由
+> 启动页改成原生恢复对话框；`src/host-protocol.ts`、`src/profile-packages.ts` 的图校验实现已被重构/删除；
+> profile 清单不再校验精确版本。**当前基线与定制结论以 [design.zh.md](design.zh.md)、
+> [decisions.zh.md](decisions.zh.md)、[reproduce.zh.md](reproduce.zh.md) 为准**，本文只作上游背景参考。
+
 文中所有路径都相对**上游仓库根目录**（如 `apps/desktop`、`docs/`、`.agents/`），不是本仓库内的路径。官方方案的完整文档见文末「上游参考文档」。
 
 ## 1. 桌面端是什么
@@ -31,23 +38,22 @@
 
 ## 3. 终端用户怎么用
 
-启动顺序（`src/main.ts`、`src/locale.ts`）：
+启动顺序（`src/main.ts`、`src/locale.ts`；**下面是 `0.1.6-alpha.2` 的实情**）：
 
-1. 主窗口先显示本地加载页 `renderer/startup.html`，它不依赖 Host
-2. 首次启动创建 `$DSH_HOME/profiles/desktop` 清单与共享包链接，然后启动一次实际后端
-3. 启动成功后加载真实 Web UI
+1. 主窗口先加载 `dsh-app://app/`，网络前端的 BootPage 负责「还在等后端」的界面（本地在这上面挂加载动画）
+2. 首次启动创建 `$DSH_HOME/profiles/desktop` 清单，然后启动一次实际后端
+3. 后端就绪后同一份文档继续挂载真实 Web UI
 4. 之后与 Web 形态一致：**设置 → 模型**填 API key → **选择工作区** → 开始任务
 
-失败时加载页给出恢复操作：重试启动、禁用全部第三方插件并重试、重置 Desktop（仅打包应用提供）、重装建议。
+失败时弹**原生恢复对话框**：退出 / 重启 / 禁用第三方插件并备份 profile patch（外加重新安装的建议）。
 
-应用菜单只有两项（`src/main.ts`）：
+应用菜单（`src/main.ts`）：
 
 | 菜单项 | 快捷键 | 说明 |
 |---|---|---|
-| 桌面插件… | `Ctrl/Cmd+,` | 独立窗口 `renderer/plugin-manager.html`：列出、启用、禁用、安装、移除、更新、刷新 |
-| 检查更新… | — | 启动 10 秒后自动检查一次；可用时弹原生确认框「安装并重启」 |
+| 检查更新… | — | 启动 10 秒后自动检查一次；可用时弹确认框「安装并重启」 |
 
-「桌面插件…」在**未打包的开发模式下是灰的**，只有打包应用可以用；它执行的写操作也只作用于 Desktop 自己的 `node_modules`，由内置 pnpm 完成。
+插件管理不再是桌面端的一个窗口，改在应用内完成。
 
 ### 数据与隔离
 

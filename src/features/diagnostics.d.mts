@@ -49,14 +49,16 @@ export const APPLICATION_PAGE_PHASE: string
  * 把一次启动阶段追加进诊断文件（行格式与写失败兜底都在本层）。
  * @param environment - 进程环境。
  * @param phase - 官方状态名，或 `APPLICATION_PAGE_PHASE`。
+ * @param detail - 该阶段的附带文本；失败阶段传官方 `state.message`，其余阶段不传。
  */
 export function recordStartupPhase(
   environment: Record<string, string | undefined>,
   phase: string,
+  detail?: string,
 ): void
 
 /**
- * 官方错误出口要显示的状态：命中诊断用诊断文本，否则用 `fallback` 给出的官方状态。
+ * 官方致命错误出口要显示的文本：命中诊断用诊断文本，否则用 `fallback` 给出的官方状态。
  * @param error - 捕获到的失败。
  * @param options - `profileRecovery` 事实与官方兜底读取器。
  */
