@@ -245,3 +245,35 @@ patch 层只把两处调用换掉（`pack.ts.patch` 与新增的 `prepare-packag
 | 整体闭环 | 配置驱动全流程 + 源仓库仍能 checkout 到指定提交 | 上游 clone |
 
 完整命令与判据见 [docs/reproduce.zh.md](../reproduce.zh.md) 第 3、6 节。
+
+## 9. 0.1.6-alpha.2 移植后的复核（Session 16 追加）
+
+上面 §4/§8 的数字与文件属于 `0.1.5-rc.2` 基线：`src/adaptator/smoke.test.mjs`、`src/features/smoke-tolerance.*`
+已随上游删除 `checkFsExt` 一并退场，诊断规则表也已按新上游源码重写。当前 pin（`dsh-v0.1.6-alpha.2`）下
+**本机实测**（逐文件直跑，绕开 `node --test` 的子进程隔离）：
+
+| 测试文件 | 结果 |
+|---|---|
+| `src/features/build-cache.test.mjs` | 19/19 |
+| `src/features/diagnostics.test.mjs` | 9/9 |
+| `src/features/renderer/loading-art.test.mjs` | 4/4 |
+| `scripts/check-layers.test.mjs` | 28/28 |
+| `src/features/profile-recovery.test.mjs` | 24/26（2 例失败是沙箱 `spawnSync … EPERM`，与改动无关） |
+
+⇒ 可跑部分合计 **70 pass / 0 fail**（`profile-recovery` 的 2 例在本沙箱必然失败）。`todo-list.md` 里的
+`67 pass` 与 `smoke.test.mjs` 4 例是旧基线的记录，保留不动。
+
+三项本轮新增事实（同步写进了 `design`/`decisions`/`reproduce`）：
+
+1. **壳自有文档要自己服务**：上游 `main.ts` 的协议处理器只服务 `dsh-app://app/*`，壳的更新/强更/策略三份
+   `dsh-app://shell/*` 文档加载成 404 空文档 → 隐形 `modal` 子窗口 + 永不撤销的
+   `body { filter: blur(2px) !important }`（R31 / 决策 42）。
+2. **本地构建不内嵌强制更新策略**：`electron-builder-config.mjs` 的 `extraMetadata` 摘掉
+   `dshMandatoryUpdatePolicy`，源码构建不再弹飞书登录（R32 / 决策 43）。
+3. **应用图标只走 `copy`**：`assets/dsh-impact.jpg` 转出的 `assets/dsh-impact.png` 覆盖上游
+   `apps/desktop/resources/icon-windows.png`（R33）。`scripts/make-icons.py` 是另一条线，喂加载动画用的
+   `assets/icon.png`。
+
+另有一处与代码直接冲突的旧结论已更正：`build.mjs` 的 `releaseArtifacts()` 现在是 **`cpSync` 复制**
+（源仓库保留原件，`package-dir` 缓存阶段下一轮照常命中），不再是早期版本的 `renameSync` 搬走
+（决策 41 / reproduce §3.2 已改对）。

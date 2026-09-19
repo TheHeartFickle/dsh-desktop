@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
-index e2e4d9e6c3..3a02dead91 100644
+index 03e6f29a57..1705efd117 100644
 --- a/apps/desktop/src/locale.ts
 +++ b/apps/desktop/src/locale.ts
 @@ -1,5 +1,7 @@
@@ -9,20 +9,20 @@ index e2e4d9e6c3..3a02dead91 100644
 +
  export const en = {
    application: 'Application',
-   startupFailed: 'DeepSeek Harness could not start',
-@@ -34,6 +36,7 @@ export const en = {
-   retry: 'Retry startup',
-   disableAll: 'Disable all plugins and retry',
-   recoveryDescription: 'The backend could not start. Update or disable incompatible plugins, then retry. Installed plugins and configuration are retained.',
+   aboutMenu: 'About DeepSeek Harness',
+@@ -21,6 +23,7 @@ export const en = {
+   restartApplication: 'Restart',
+   recoveryOperationFailed: 'The recovery operation failed',
+   disableThirdPartyPlugins: 'Disable third-party plugins, back up profile patch, and restart',
 +  webProfileRolledBack: ROLLBACK_NOTICE_EN,
-   changingActivation: 'Changing plugin activation…',
-   npmPackage: 'npm package',
-   install: 'Install',
-@@ -88,6 +91,7 @@ export const zh = {
-   retry: '重试启动',
-   disableAll: '禁用全部插件并重试',
-   recoveryDescription: '后端无法启动。请更新或禁用不兼容插件，然后重试。已安装插件和配置会保留。',
+   checkUpdatesMenu: 'Check for Updates…',
+   updateCheckFailedTitle: 'Update Check Failed',
+   updateCheckFailed: 'Could not check for updates. Please try again later.',
+@@ -112,6 +115,7 @@ export const zh = {
+   restartApplication: '重启',
+   recoveryOperationFailed: '恢复操作失败',
+   disableThirdPartyPlugins: '禁用第三方插件、备份 profile patch 并重启',
 +  webProfileRolledBack: ROLLBACK_NOTICE_ZH,
-   changingActivation: '正在更改插件启用状态…',
-   npmPackage: 'npm 包',
-   install: '安装',
+   checkUpdatesMenu: '检查更新…',
+   updateCheckFailedTitle: '更新检查失败',
+   updateCheckFailed: '检查更新失败，请稍后重试。',

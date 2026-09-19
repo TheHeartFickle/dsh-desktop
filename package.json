@@ -7,6 +7,7 @@
   "scripts": {
     "apply": "node scripts/build.mjs --apply-only",
     "build": "node scripts/build.mjs",
-    "test": "node --test \"src/**/*.test.mjs\""
+    "check:layers": "node scripts/check-layers.mjs",
+    "test": "node --test \"src/**/*.test.mjs\" \"scripts/*.test.mjs\""
   }
 }

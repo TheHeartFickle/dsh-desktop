@@ -1,0 +1,39 @@
+diff --git a/packages/sandbox/sandbox-local/tests/local.spec.ts b/packages/sandbox/sandbox-local/tests/local.spec.ts
+index 41a33b5ff6..88ec0ff248 100644
+--- a/packages/sandbox/sandbox-local/tests/local.spec.ts
++++ b/packages/sandbox/sandbox-local/tests/local.spec.ts
+@@ -440,8 +440,11 @@ describe('the windows-acl probe (runner invocation contract)', () => {
+     })
+     const confined = await sandbox.confine(['true'], RO)
+     expect(confined.argv.slice(0, 2)).toEqual([process.execPath, '--import'])
+-    expect(confined.argv[2]).toMatch(/^data:text\/javascript,/)
+-    expect(confined.argv[3]).toMatch(/runner\.ts$/)
++    // Local patch: the console guard preload rides in front of the runner (docs/reproduce.zh.md R34).
++    expect(confined.argv[2]).toMatch(/acl-console-guard\.mjs$/)
++    expect(confined.argv[3]).toBe('--import')
++    expect(confined.argv[4]).toMatch(/^data:text\/javascript,/)
++    expect(confined.argv[5]).toMatch(/runner\.ts$/)
+   })
+ 
+   it('loads the full source runner independently of cwd and ambient tsconfig', async () => {
+@@ -455,7 +458,9 @@ describe('the windows-acl probe (runner invocation contract)', () => {
+     })
+     const { argv } = await sandbox.confine(['true'], RO)
+     for (const ambientConfig of [undefined, join(cwd, 'absent-ambient-tsconfig.json')]) {
+-      const result = spawnSync(argv[0]!, argv.slice(1, 4), {
++      // Local patch: spawn the runner entry itself, skipping whatever preloads precede it.
++      const entry = argv.findIndex(argument => argument.endsWith('runner.ts'))
++      const result = spawnSync(argv[0]!, argv.slice(1, entry + 1), {
+         cwd,
+         encoding: 'utf8',
+         timeout: 5000,
+@@ -487,6 +492,8 @@ describe('the windows-acl probe (runner invocation contract)', () => {
+       windowsAclRunnerEntry: builtEntry,
+     })
+     const confined = await sandbox.confine(['true'], RO)
+-    expect(confined.argv.slice(0, 2)).toEqual([process.execPath, builtEntry])
++    expect(confined.argv.slice(0, 2)).toEqual([process.execPath, '--import'])
++    expect(confined.argv[2]).toMatch(/acl-console-guard\.mjs$/)
++    expect(confined.argv[3]).toBe(builtEntry)
+   })
+ })

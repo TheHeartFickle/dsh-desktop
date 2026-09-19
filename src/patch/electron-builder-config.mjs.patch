@@ -1,0 +1,24 @@
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index ea33c60b2a..2ef32bb70d 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -77,7 +77,10 @@ export function createElectronBuilderConfig(
+   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
+   return {
+     appId,
+-    extraMetadata: { dshDesktopAppId: appId, dshMandatoryUpdatePolicy: policy },
++    // Local customization: a locally built app carries no mandatory-update policy, so the shell
++    // never queries a deployment and never asks for the test deployment's Feishu login
++    // (docs/decisions.zh.md 43). The policy is still validated from `.env.windows` in `beforePack`.
++    extraMetadata: { dshDesktopAppId: appId },
+     productName: 'DeepSeek Harness',
+     artifactName: 'deepseek-harness-${version}-${os}-${arch}.${ext}',
+     directories: { output: unsigned ? join(buildPaths.root, 'unsigned-artifacts') : buildPaths.artifacts },
+@@ -102,6 +105,7 @@ export function createElectronBuilderConfig(
+       'lib/preload-app.cjs',
+       'lib/preload-mandatory.cjs',
+       'lib/preload-update-dialog.cjs',
++      'local/**/*.mjs',
+       'renderer/**/*',
+       'package.json',
+       { from: buildPaths.dsh, to: 'dsh', filter: ['**/*'] },
