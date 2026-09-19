@@ -1,0 +1,12 @@
+diff --git a/packages/sandbox/sandbox-windows-acl/package.json b/packages/sandbox/sandbox-windows-acl/package.json
+index 05fa2c64f0..ff729cd164 100644
+--- a/packages/sandbox/sandbox-windows-acl/package.json
++++ b/packages/sandbox/sandbox-windows-acl/package.json
+@@ -26,6 +26,7 @@
+     "./package.json": "./package.json"
+   },
+   "files": [
++    "acl-console-guard.mjs",
+     "lib/index.js",
+     "lib/runner.js",
+     "lib/types-*.js",

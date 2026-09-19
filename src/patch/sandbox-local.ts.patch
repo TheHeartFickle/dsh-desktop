@@ -1,0 +1,35 @@
+diff --git a/packages/sandbox/sandbox-local/src/index.ts b/packages/sandbox/sandbox-local/src/index.ts
+index 037dc90079..0725663378 100644
+--- a/packages/sandbox/sandbox-local/src/index.ts
++++ b/packages/sandbox/sandbox-local/src/index.ts
+@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process'
+ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+-import { fileURLToPath } from 'node:url'
++import { fileURLToPath, pathToFileURL } from 'node:url'
+ import {
+   LAUNCHER_BIN,
+   LAUNCHER_FAILURE_EXIT,
+@@ -563,11 +563,19 @@ export class LocalSandboxProvider extends SandboxProvider {
+     const override = this.internals.windowsAclRunnerArgs
+     if (override !== undefined) return override
+     const builtEntry = this.internals.windowsAclRunnerEntry ?? fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/runner'))
+-    if (existsSync(builtEntry)) return [process.execPath, builtEntry]
++    // Local customization: the runner must own a console before it spawns the
++    // WRITE_RESTRICTED child. A restricted process can only INHERIT a console
++    // (creating one fails DLL initialization), and the packaged desktop app is
++    // Electron all the way down — a GUI subsystem chain that never has one —
++    // so every confined command would exit 0xC0000142 (docs/reproduce.zh.md R34).
++    // The payload is the sandbox package's own adapter file, loaded as a preload;
++    // the runner argv contract is unchanged because node consumes the flag.
++    const guard = (entry: string): string => new URL('../acl-console-guard.mjs', pathToFileURL(entry)).href
++    if (existsSync(builtEntry)) return [process.execPath, '--import', guard(builtEntry), builtEntry]
+     const sourceEntry = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl/src/runner.ts'))
+     const sourceConfig = fileURLToPath(new URL('../../../../tsconfig.base.json', import.meta.url))
+     const registration = `import { register } from ${JSON.stringify(import.meta.resolve('tsx/esm/api'))}; register({ tsconfig: ${JSON.stringify(sourceConfig)} });`
+-    return [process.execPath, '--import', `data:text/javascript,${encodeURIComponent(registration)}`, sourceEntry]
++    return [process.execPath, '--import', guard(sourceEntry), '--import', `data:text/javascript,${encodeURIComponent(registration)}`, sourceEntry]
+   }
+ }
+ 

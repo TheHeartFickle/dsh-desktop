@@ -69,7 +69,10 @@ patch 层 ──调度已封装能力──▶ 功能层(func) ──调用─�
   `DSH_DESKTOP_APP_ID` 写成配置的 `appId`——用户填过凭据的文件永不被覆盖（决策 39）。
 - **第 4 步**：复制目标写在配置里，复制到哪就是哪；不为「保护源仓库整洁」而藏文件或改名。除各层的 `.mjs`/`.d.mts`
   与渲染进程资源外，`copy` 也是本地品牌资源的入口：`assets/dsh-impact.png` 覆盖官方的
-  `apps/desktop/resources/icon-windows.png`，由官方打包脚本带进产物与 exe 图标。
+  `apps/desktop/resources/icon-windows.png`，由官方打包脚本带进产物与 exe 图标。`copy` 的第二类目标是
+  **官方运行时包自己的目录**：某个能力必须与官方某个包同装同发时（例：ACL runner 的控制台守卫要落在
+  `packages/sandbox/sandbox-windows-acl/` 并进该包 `files` 才会被 `pnpm pack` 带进运行时），就复制进那个包的
+  目录，而不是往 `apps/desktop/local/` 堆（决策 44 / R34）。
 - **第 5 步**：patch 不实现功能，只做任务调度与导出修改；补丁失配时 `git apply` 直接报错，无需额外的断言机制。
 - **第 6 步**：构建指令写在配置里，脚本不硬编码任何上游脚本名或参数。**产物写到哪由上游构建脚本决定，本仓库
   不改它的输出路径**；配置的 `build[].artifacts{from,to}` 只声明「这条指令的产物在哪、复制到本仓库的哪」，成功后

@@ -246,7 +246,7 @@ foreach ($entry in $config.patches) {
 改了就要在 `src/build.config.json` 里对齐，这些字段都可能动：
 
 - `tag` → 新的上游 tag（提交号由脚本解析，不写进配置）
-- `copy[]` → 新增/移动的独立文件（含渲染进程资源与 `assets/` 下覆盖上游的成品资源，例如应用图标 `assets/dsh-impact.png` → `apps/desktop/resources/icon-windows.png`）
+- `copy[]` → 新增/移动的独立文件（含渲染进程资源与 `assets/` 下覆盖上游的成品资源，例如应用图标 `assets/dsh-impact.png` → `apps/desktop/resources/icon-windows.png`；也包括必须与某个官方运行时包同装同发的文件，例如 `adaptator/acl-console-guard.mjs` → `packages/sandbox/sandbox-windows-acl/acl-console-guard.mjs`，后者还要写进那个包的 `files`——决策 44）
 - `patches[]` → 新增/删除/改名的补丁，`target` 必须指向**真实存在**的那个文件（改名/搬家的目标最容易漏）
 - `releaseEnv[]` → 官方打包本地设置文件与它的模板路径（上游改名/搬家时跟着改；官方若不再需要这类文件，就把它删空）
 - `build[].artifacts{from,to}` → 这条构建指令的产物在哪、搬进本仓库的哪（上游换了产物目录名/目标名时跟着改；
@@ -335,6 +335,7 @@ git -C $U apply --check $patch
 | 新增一个独立文件 | 适配层/功能层 + `build.config.json` 的 `copy` |
 | 渲染进程资源（图片/CSS/经典脚本） | 适配层或功能层 + `copy` 映射到官方渲染目录 |
 | 本地品牌资源（应用图标等） | 只加 `copy`：`assets/` 下的成品文件覆盖上游目标（例：`assets/dsh-impact.png` → `apps/desktop/resources/icon-windows.png`）。转换在上游之外做一次，仓库里只留成品 |
+| 某能力必须与官方某个**运行时包同装同发**（例：ACL runner 的控制台守卫要落在它旁边并由它 `--import`） | `copy` 的第二类目标：复制进那个官方包的目录，**并把文件名写进该包 `package.json` 的 `files`**（否则 `pnpm pack` 不会带进运行时）——决策 44 / R34 |
 
 ## 5. 收尾检查清单
 

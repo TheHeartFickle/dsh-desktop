@@ -15,8 +15,13 @@
       "to": "apps/desktop/local/adaptator",
       "exclude": [
         "*.test.mjs",
-        "renderer"
+        "renderer",
+        "acl-console-guard.mjs"
       ]
+    },
+    {
+      "from": "adaptator/acl-console-guard.mjs",
+      "to": "packages/sandbox/sandbox-windows-acl/acl-console-guard.mjs"
     },
     {
       "from": "features",
@@ -95,6 +100,18 @@
     {
       "file": "patch/main-startup.spec.ts.patch",
       "target": "apps/desktop/tests/main-startup.spec.ts"
+    },
+    {
+      "file": "patch/sandbox-local.ts.patch",
+      "target": "packages/sandbox/sandbox-local/src/index.ts"
+    },
+    {
+      "file": "patch/sandbox-local.spec.ts.patch",
+      "target": "packages/sandbox/sandbox-local/tests/local.spec.ts"
+    },
+    {
+      "file": "patch/sandbox-windows-acl.package.json.patch",
+      "target": "packages/sandbox/sandbox-windows-acl/package.json"
     }
   ],
   "build": [

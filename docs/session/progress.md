@@ -995,3 +995,85 @@ design §2 第 4 步、reproduce §3.2 + 新增 R33、skill Step 5 与 §4 判�
 → **Skill is valid!**；逐文件直跑单测 build-cache 19/19、diagnostics 9/9、loading-art 4/4、
 check-layers 28/28、profile-recovery 24/26（2 例为沙箱 `spawnSync … EPERM`）。**未验证**：完整构建与打包冒烟
 （沙箱限制，R11），因此 R33 的「产物 `resources/app/icon.png` 与源图逐字节相同」这条判据没有实跑。
+
+## Session 17 — 桌面端「agent 的命令全跑不了」的根因与修复（决策 44 / R34）
+
+### 触发
+
+用户给出一份会话导出（`session-963b1707-503d-4a6f-90c9-375321de2850`）并说「构建后进行使用发现无法正常使用」。
+
+### 会话里的事实
+
+`pwsh` 工具在默认 workspace-write 下对**任何**命令都返回 `(no output)` + 退出码 `3221225794`
+（`0xC0000142` = `STATUS_DLL_INIT_FAILED`）：`1+1`、`echo`、`Set-Content` 一样；提权成
+`danger-full-access` 就正常；文件工具不受影响。导出会话里的上一个 agent 把这条线停在「默认模式下 pwsh
+进程无法启动」的猜测上（并因此反复申请提权，最后被用户拒绝）。
+
+### 时间线证据（确认是桌面端，不是 web 端）
+
+- 该会话的 `pwsh` 调用全部落在 11:34–12:51；`%APPDATA%\@deepseek-ai\dsh-desktop`（桌面端自己的 userData）
+  最后写入 12:52:18，`profiles/desktop` 9:43 建立、11:30 还在写 —— 会话是在**桌面端**里跑的。
+- 同一台机器、同一个 pin 的 web 端正常：本会话自己的 `pwsh` 能跑，且 `TEMP` 被 runner 改写成了私有临时目录
+  （`…\Temp\dsh-AaQQYX`），说明它确实走了同一条 ACL runner，不是「没套沙箱」。
+- 排除「版本不同」：桌面运行时与全局安装的 `dsh-sandbox-windows-acl` / `dsh-pwsh-sandbox` /
+  `dsh-pwsh-local` / `dsh-sandbox-local` / `dsh-win32-process` 的 JS **逐字节相同**（只有 `package.json`
+  与 tsdown 的 chunk 名不同）。
+
+### 机制（本机实验：同一个 runner、同一个 workspace、同一个 `pwsh.exe`）
+
+| 探针 | 进程链 | 结果 |
+|---|---|---|
+| A | runner = `node.exe`（web 那条链） | `2`，exit 0 |
+| B | runner = 打包的 `DeepSeek Harness.exe`（`ELECTRON_RUN_AS_NODE=1`，桌面那条链） | `0xC0000142`，stdout/stderr 全空 |
+| — | 受限的 `cmd` / `pwsh` 以 `CREATE_NO_WINDOW` 起 | `0xC0000142` |
+| — | 同样的命令继承当前控制台 | exit 0 |
+
+结论：ACL 的 `WRITE_RESTRICTED` 子进程**只能继承控制台、不能新建**；桌面端整条链是 GUI 子系统进程
+（Electron 主进程 → `ELECTRON_RUN_AS_NODE` 的 Host → 同样以 `process.execPath` 起的 runner），**没有控制台
+可继承**，被包装的 `pwsh` 在 DLL 初始化阶段就结束、runner 把该退出码原样镜像回来。web 端由终端启动，控制台
+从 `node.exe` 一路继承，所以同一份官方代码在那边正常。官方源码注释里已经记过「`CREATE_NO_WINDOW` /
+`CREATE_NEW_CONSOLE` 的受限子进程会 `STATUS_DLL_INIT_FAILED`」，缺的只是「GUI 宿主压根没有控制台」这一环
+（官方测试与本地 dev 冒烟都跑在有控制台的终端里，所以一直没暴露）。
+
+### 修复（决策 44）
+
+- `src/adaptator/acl-console-guard.mjs`（新，适配层）：没有控制台时 `AllocConsole` + `ShowWindow(SW_HIDE)`，
+  已有控制台时空转；拿不到 koffi 或 Win32 调用失败时按原样返回，**不写任何 stdio**。
+- `src/patch/sandbox-local.ts.patch`（新）：`windowsAclRunnerInvocation()` 在 runner 前插一个
+  `--import <guard>`（两条 arm 都插；`new URL('../acl-console-guard.mjs', pathToFileURL(entry))` 对
+  `lib/runner.js` 与 `src/runner.ts` 都落在包根）。
+- `src/patch/sandbox-windows-acl.package.json.patch`（新）：把 `acl-console-guard.mjs` 写进该包 `files`，
+  否则 `pnpm pack` 不会把它带进运行时。
+- `src/patch/sandbox-local.spec.ts.patch`（新）：官方 `local.spec.ts` 有三处断言钉住了 runner argv 的形状
+  （`slice(0, 2)`、`argv[2]`/`argv[3]`、`spawnSync(argv.slice(1, 4))`），随接线一起改，别让官方用例变成假红。
+- `src/build.config.json`：新增 copy 条目（`adaptator/acl-console-guard.mjs` →
+  `packages/sandbox/sandbox-windows-acl/acl-console-guard.mjs`）、登记三条 patch，并把它从
+  `apps/desktop/local/adaptator` 那条目录 copy 里 exclude（那份拷贝没有任何加载者）。
+
+### 验证
+
+- `node scripts/check-layers.mjs` → **0 硬违规**（4 条既有告警，与本次改动无关）。
+- 三个新 patch 逐个 `git apply --check`（上游工作区已 `checkout` 回干净状态）→ **exit 0**。
+- 守卫文件本身的行为：E（Electron 链路、无守卫）`0xC0000142` → F（同链路 + 真守卫文件）输出 `2`、exit 0 →
+  G（`node.exe` 链路 + 守卫）行为不变。
+- 仓库单测（按 skill §Step 6 的「直跑测试文件」绕开 `node:test` 的子进程隔离）：`check-layers` **28/28**、
+  `build-cache` **19/19**、`diagnostics` **9/9**、`loading-art` **4/4**、`profile-recovery` **24/26**
+  （2 例是受限沙箱里 `spawnSync … EPERM`，与本次改动无关，文档里早有记录）。
+- **完整构建**（非受限权限，2026-09-19）：`node scripts/build.mjs` → **exit 0**，三条新 patch 全部应用、
+  守卫文件按 `copy` 落进 `packages/sandbox/sandbox-windows-acl/`。中途踩到一个环境坑：`prepare:runtime`
+  重新下载 Electron 走 GitHub 直连失败，带 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
+  （或本机代理）后通过（新增 R35）。
+- **产物级判据**（出货形态，非受限权限实测）：① 构建目标运行时树里的守卫与源文件**逐字节相同**；
+  ② 打包产物 `resources/app.asar` 内 `dsh/node_modules/@deepseek-ai/dsh-sandbox-windows-acl/` 同时有守卫与
+  `lib/runner.js`，且 `dsh-sandbox-local/lib/index.js` 带这条接线（用打包的 Electron 读 asar 验的）；
+  ③ 用**出货的 seam** 算出 argv = `[node, --import, <guard>, <runner>, --workspace, …]`，argv[2] 指向的文件存在；
+  ④ 行为：打包 Electron + **asar 内**的守卫与 runner 跑 `1+1` → 输出 `2`、exit 0；去掉 `--import` 的同一命令
+  → `0xC0000142`、stdout/stderr 全空。
+- **打包产物启动冒烟**：`node scripts/smoke-packaged.mjs 120` → **通过**（`诊断到达应用页=true profile 自包含=true`）。
+- **官方 vitest（`local.spec.ts`）没跑成**：上游自己在 win32 上把这个文件排除了（`vitest.config.ts` 的
+  `windowsUnsupportedPackages` 含 `packages/sandbox/sandbox-local`），`pnpm exec vitest run` 直接报
+  `No test files found`。所以那三处断言改动的验证只到「逐行读一遍 + 形状与出货 argv 对得上」：它在
+  Linux/macOS 的 CI 里会真跑，断言按那条链的形状写（`argv[2]` 是守卫、`argv[3]` 是第二个 `--import`、
+  `argv[5]` 是 `runner.ts`；`spawnSync` 那条改成「跑到 runner 入口为止」，与守卫在不在前面无关）。
+- **未做**：真启动桌面端、让 agent 自己跑一条命令（最终验收）。上面 ④ 已经是同一条链路的出货字节，
+  差的只是模型那一层。
