@@ -104,7 +104,7 @@ npm run apply                    # 同上，但在「打 patch」之后停下（
 | 补齐打包本地设置 | `appId`、`releaseEnv[]` | 目标文件缺失时按官方模板生成，`DSH_DESKTOP_APP_ID` 写成配置的 `appId`；已存在的不动（R29） |
 | 搬运产物 | `build[].artifacts{from,to}` | 该条构建指令成功后，把 `from`（相对源仓库根）**复制**到 `to`（相对本仓库根）；`to` 先整体删掉再复制，所以 `release/` 里永远是本次构建的产物，源仓库里的原件保留（以产物为输出的缓存阶段下一轮照常命中）。`smoke-packaged.mjs` 读同一个字段找产物，不写死路径（决策 41） |
 | 复制定制文件 | `copy[{from,to}]` | 适配层与功能层的独立文件复制到目标位置；本地品牌资源也走这里：`assets/dsh-impact.png` → `apps/desktop/resources/icon-windows.png`（官方打包脚本把它同时用作产物图标与 exe 图标，所以覆盖它即换掉整个应用的图标） |
-| 打 patch | `patches[]` | 把已封装能力调度进官方流程（不实现功能），见决策 4 |
+| 打 patch | `patches[]` | 把已封装能力调度进官方流程（不实现功能），见决策 4。**例外形态**是 `preload-menu.ts.patch`：它把官方那个模块整体换成只返回空控制器的实现（本仓库不要 Windows 顶栏的「应用 / 编辑」两个入口），`preload-windows.ts` 一行不动。导出名必须留原样——上游 `apps/desktop/tests/preload-menu.client.spec.ts` 仍 import 它，删文件或改导出名会让 `tsc -b tsconfig.host.json` 直接红 |
 | 构建 | `build[{cwd,command}]` | 在源仓库执行，命令与参数不在脚本里硬编码 |
 
 换应用图标是纯 `copy` 的事（不必改脚本）：源图是 `assets/dsh-impact.jpg`，转出的 `assets/dsh-impact.png` 覆盖
@@ -255,7 +255,7 @@ pnpm install --frozen-lockfile
 | 功能层（进程内） | 纯函数单测（`node --test`，显式路径），不依赖 Electron 与官方代码 |
 | 功能层（tarball 读取） | 拿 `packed/` 里的真实 tarball 逐一双跑「外部 `tar -tzf` / `tar -xOzf`」与进程内 `listTarballEntries` / `readTarballManifest`，断言条目列表与 manifest 完全一致（实测 277/277），再比 `desktop-packages.json` 的 sha256 不变 |
 | 适配层 / 功能层（渲染进程） | `src/features/renderer/loading-art.test.mjs`：用 `node:vm` + 假 DOM（含假 `MutationObserver`）按接线顺序跑两个经典脚本，**再照 patch 的接线方式订阅**（`onFailed(dshLoadingArt.sync)`），断言「官方启动页出现前收起、出现后展示、加载标记消失即收起、启动页被移除后跟着离开文档」，以及「只创建 `img` 且无内联样式」；不依赖 jsdom 与官方代码 |
-| patch 层 | `git apply --check`（12 个 patch 逐个 + 联合 apply 全通过）+ 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了接线再跑官方用例：在**源仓库根**执行 `node_modules/.bin/vitest run apps/desktop/tests/main-startup.spec.ts`（**本次未跑**：沙箱里 vite 起不来，见 R11；替代证据是 `tsc -b tsconfig.host.json` 对该文件零报错） |
+| patch 层 | `git apply --check`（16 个 patch 逐个 + 联合 apply 全通过）+ 完整构建 + 隔离 `DSH_HOME` 启动冒烟；改了接线再跑官方用例：在**源仓库根**执行 `node_modules/.bin/vitest run apps/desktop/tests/main-startup.spec.ts`（**本次未跑**：沙箱里 vite 起不来，见 R11；替代证据是 `tsc -b tsconfig.host.json` 对该文件零报错） |
 | 独立文件的打包输入（R23/决策 40） | 在**源仓库根**跑 workspace 面打包：`node node_modules/tsdown/dist/run.mjs --env.DSH_BUILD_FACE host`（用 `--env.` 传 face，等价于上游 `build:lib:host` 的后半段）。判据：exit 0 + `apps/desktop` 四个产物构建完成 + `lib/preload-app.cjs` 里没有 `require('../local/…')` 也没有 `node:` 依赖、`lib/main.js` 保留 `../local/…` 外部 import。**只跑 `apply` 或门限看不出这一类** |
 | 加载动画（视觉） | dev 模式 + R20 的 inspector 读法：`naturalWidth` 证明图片解码、`animationName`/两次 `transform` 证明 CSS 动画在跑、`styleElements`/`style` 属性为 0 证明没碰内联样式 |
 | 阶段 4（迁移 / 快照 / 回退） | `src/features/profile-recovery.test.mjs`（26 例：配置语义合并、allowBuilds 按行合并、幂等、快照/回退两步、回退文案、**迁移记账与严格一次性**）+ `main-startup.spec.ts.patch` 新增的 7 个用例（迁移接线顺序、settle、skip、放弃复制、回退一次后停手、诊断进原生对话框、dev 不碰 desktop profile）。**本次未跑 vitest**（沙箱限制，见 R11） |

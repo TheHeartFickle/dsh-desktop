@@ -94,6 +94,10 @@
       "target": "apps/desktop/src/web-document.ts"
     },
     {
+      "file": "patch/preload-menu.ts.patch",
+      "target": "apps/desktop/src/preload-menu.ts"
+    },
+    {
       "file": "patch/locale.ts.patch",
       "target": "apps/desktop/src/locale.ts"
     },
