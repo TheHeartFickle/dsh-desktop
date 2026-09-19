@@ -1059,10 +1059,13 @@ check-layers 28/28、profile-recovery 24/26（2 例为沙箱 `spawnSync … EPER
 - 仓库单测（按 skill §Step 6 的「直跑测试文件」绕开 `node:test` 的子进程隔离）：`check-layers` **28/28**、
   `build-cache` **19/19**、`diagnostics` **9/9**、`loading-art` **4/4**、`profile-recovery` **24/26**
   （2 例是受限沙箱里 `spawnSync … EPERM`，与本次改动无关，文档里早有记录）。
-- **完整构建**（非受限权限，2026-09-19）：`node scripts/build.mjs` → **exit 0**，三条新 patch 全部应用、
-  守卫文件按 `copy` 落进 `packages/sandbox/sandbox-windows-acl/`。中途踩到一个环境坑：`prepare:runtime`
-  重新下载 Electron 走 GitHub 直连失败，带 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
-  （或本机代理）后通过（新增 R35）。
+- **完整构建**（非受限权限，2026-09-19）：第一次跑挂在 `prepare:runtime`（`TypeError: fetch failed`）。用户追问
+  「为什么要重新下载」后复核，发现我最初写的成因是**错的**（已改）：Electron 的 zip 缓存**会**被复用，
+  但 `@electron/get` 每次都要**重新联网取 `SHASUMS256.txt`** 做校验（显式 `cacheMode: Bypass`），取不到就把
+  缓存判成「对不上校验和」、退化成重下 157MB 整包；缓存条目还与取件 URL 绑定。对策是把
+  `ELECTRON_MIRROR` 写进 `build[].env`（与 pnpm 镜像同一处，决策 5）。**随后不带任何 shell 环境变量重跑 →
+  exit 0**（三条新 patch 全部应用、守卫按 `copy` 落位），日志 `.cache/build/guard-build2.log`。细节与探针
+  输出见 R35。
 - **产物级判据**（出货形态，非受限权限实测）：① 构建目标运行时树里的守卫与源文件**逐字节相同**；
   ② 打包产物 `resources/app.asar` 内 `dsh/node_modules/@deepseek-ai/dsh-sandbox-windows-acl/` 同时有守卫与
   `lib/runner.js`，且 `dsh-sandbox-local/lib/index.js` 带这条接线（用打包的 Electron 读 asar 验的）；
@@ -1077,3 +1080,50 @@ check-layers 28/28、profile-recovery 24/26（2 例为沙箱 `spawnSync … EPER
   `argv[5]` 是 `runner.ts`；`spawnSync` 那条改成「跑到 runner 入口为止」，与守卫在不在前面无关）。
 - **未做**：真启动桌面端、让 agent 自己跑一条命令（最终验收）。上面 ④ 已经是同一条链路的出货字节，
   差的只是模型那一层。
+
+### 附：用户自己跑构建时的一次失败（R36）
+
+用户在 14:03:31 自己跑了一次构建，14:07:35 挂在 `prepare:dsh`：
+
+```
+Error: desktop native payload smoke failed
+Error: spawnSync …\targets\win-x64\electron\electron.exe ETIMEDOUT   signal: 'SIGTERM'   errno: -4039
+  output[1]: 'Already up to date\n\nDone in 505ms using pnpm v11.7.0\n'
+Error: desktop package: run prepare:dsh failed; evidence: …packaging-runs/2026-09-19T06-03-31.088Z-U7QlaC
+```
+
+从取证目录读出来的事实（`events.jsonl` + `stderr.log` + `stdout.log`）：
+
+| 问题 | 答案 |
+|---|---|
+| 是阶段超时吗？ | 不是：`events.jsonl` 里 `run prepare:dsh` 是 `code:1, timedOut:false`（阶段跑了 131.3 s） |
+| 是下载/缓存问题吗？ | 不是：`run prepare:runtime` `code:0`（76.7 s）；zip 取件正常 |
+| 到底哪一步？ | 上游夹具 `apps/desktop/tests/fixtures/runtime-payload-smoke.mjs` 的**第一个**检查 `checkPnpm()`（139-140 行）：`execFileSync(electron.exe, ['--expose-internals', …/runtime/pnpm/bin/pnpm.mjs, 'run', 'check'], { timeout: 45_000 })` |
+| `Already up to date` 是失败点吗？ | 不是，那是 pnpm `verify-deps-before-run` 的自动安装；失败点是断言要的 `desktop-node-script-ok` 一直没出现 → 卡在 `pnpm → runtime/bin/node.cmd → electron check.cjs` |
+| 是我们的改动引起的吗？ | 不是：这条链不经过 ACL 沙箱（守卫只在 ACL runner 里 `--import`）；7 分钟前那次构建（13:53:59）同一夹具 `prepare:dsh code=0` |
+| 产物坏了吗？ | 没有：`targets/win-x64/electron/` 的 `electron.exe`（244MB）/`ffmpeg.dll`/`resources.pak` 与下载 zip 内同名字节逐字节一致（`ZipFile` 取条目算 sha256） |
+
+疑点是「每轮重新解压出来的 244MB `electron.exe` 首次运行被拖慢」压过了 45 s 预算（当天该夹具 2 通过 /
+1 失败）；受限沙箱里 Defender 的 cmdlet 载不进来（`Get-MpComputerStatus` 报模块加载失败），**未验证**。
+没有重跑（用户明确表示构建是他自己跑的），失败模式与判读配方写进 R36。顺带纠正两处旧数值：
+`prepare:runtime` 不是文档里写的「≈6s」，实测 76–85 s（R12/决策 22 已改，并把「收益不值一层缓存」的
+判据标注为建立在错误数值上）。
+
+### 附 2：构建输出改成「终端下同时回显」（用户问「为什么不同步输出到终端」）
+
+用户看到构建停在 `build: pnpm 入口 …` 就以为卡死（实际它在 `electron-builder` 里正常干活，判活的证据：
+`unsigned-artifacts\win-unpacked` 15 秒内从 73 文件/365.9MB 涨到 294 文件/720.8MB，node 进程 CPU 110→150 s）。
+
+原因两条：① 决策 10/R5——巨量输出回显会灌死 agent 的 subprocess 管道；② 原来的 `spawnSync` **根本做不到**
+边跑边回显（同步实现阻塞事件循环，只能等结束再整段回显）。
+
+改法（`scripts/build.mjs`）：把 `runTool` 与第 6 步的 `spawnSync` + fd 重定向换成同一个异步 `runLogged`：
+`spawn` + `stdout/stderr` 两个流**同时**写日志文件与（**仅当 `process.stdout.isTTY`**）控制台；`git clone` /
+`pnpm install` / 构建指令三处都走它。日志文件仍是全量唯一凭据，agent/管道场景（非 TTY）保持静默
+——那正好是 R5 要保护的场景。`once(child,'close')` 在 'error' 先到时会 reject（Node 对 `error` 特判），
+已单独接住并按原文案报错。
+
+**验证**：`node --check scripts/build.mjs` 通过；三处调用点都改成 `await`；无残留 `spawnSync`/`openSync`/
+`closeSync` 引用。**未实跑**：这条代码路径本身用的就是 pipe 式子进程，而本会话的受限沙箱禁止它（R11），所以
+它的第一次实跑就是用户的下一次构建；失败模式可控（第 6 步报错即可重跑，前 5 步幂等）。文档已同步：
+决策 10 与 R5 写明「控制台停在 `build: pnpm 入口 …` 是预期」以及看进度的三条途径。

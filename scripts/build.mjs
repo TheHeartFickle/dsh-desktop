@@ -17,9 +17,10 @@
  * 路径基准：`upstream` 相对仓库根；`copy[].from`、`patches[].file` 相对 `src/`；
  * `copy[].to`、`patches[].target`、`build[].cwd` 相对源仓库根。
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkLayers, loadProject, renderReport } from './check-layers.mjs'
@@ -53,17 +54,49 @@ function tailLog(lines = 25) {
 }
 
 /**
- * 跑一条辅助命令（git clone / pnpm install），输出追加进构建日志：长输出不进管道（决策 10）。
+ * 跑一条长命令：输出**完整**追加进构建日志，并且**只在 stdout 是终端时**同步回显一份。
+ *
+ * 落盘是唯一凭据（决策 10；R16 的缓存决策行也都在这个文件里），回显只是给人的进度。经 agent 的管道跑
+ * 构建时 stdout 不是终端，那种场景必须保持安静——巨量输出回显会灌死 agent loop（R5，实测卡死两次）。
+ * 用异步 `spawn` 而不是 `spawnSync` 的原因也在这里：同步实现会阻塞事件循环，做不到「边跑边落盘 + 回显」。
  * @param command - 可执行文件。
  * @param args - 参数列表。
- * @param options - 传给 `spawnSync` 的其余选项（`cwd` 等）。
+ * @param options - `cwd`、`env` 等。
+ * @returns `{ code, error }`：退出码，以及启动失败（没有启动错误时 `error` 为 `undefined`）。
  */
-function runTool(command, args, options = {}) {
-  const fd = openSync(LOG_PATH, 'a')
-  const result = spawnSync(command, args, { ...options, stdio: ['ignore', fd, fd] })
-  closeSync(fd)
-  const code = result.status ?? 1
-  if (result.error !== undefined || code !== 0) {
+async function runLogged(command, args, options = {}) {
+  const echo = process.stdout.isTTY === true
+  const log = createWriteStream(LOG_PATH, { flags: 'a' })
+  const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
+  const forward = (stream, sink) => stream.on('data', (chunk) => {
+    log.write(chunk)
+    if (echo) sink.write(chunk)
+  })
+  forward(child.stdout, process.stdout)
+  forward(child.stderr, process.stderr)
+  let launchError
+  let code = 1
+  try {
+    const [value] = await once(child, 'close')
+    code = value ?? 1
+  } catch (error) {
+    // `once(child, 'close')` 在 'error' 先到时 reject（Node 的 once 对 'error' 特判）：启动失败没有可读的输出，
+    // 只记下原因，交给调用方按原来的文案报错。
+    launchError = error
+  }
+  await new Promise((flushed) => { log.end(flushed) })
+  return { code, error: launchError }
+}
+
+/**
+ * 跑一条辅助命令（git clone / pnpm install），失败时把日志尾部打回控制台。
+ * @param command - 可执行文件。
+ * @param args - 参数列表。
+ * @param options - 传给 `runLogged` 的其余选项（`cwd` 等）。
+ */
+async function runTool(command, args, options = {}) {
+  const { code, error } = await runLogged(command, args, options)
+  if (error !== undefined || code !== 0) {
     fail(`${command} ${args.join(' ')} 失败（退出码 ${code}）\n--- 日志尾部 ---\n${tailLog()}`)
   }
 }
@@ -108,7 +141,7 @@ if (!existsSync(join(upstream, '.git'))) {
     fail(`源仓库不是 git 仓库: ${upstream}（配置缺 upstreamUrl，无法自动取回）`)
   }
   step(`源仓库缺失，从 ${config.upstreamUrl} 取回`)
-  runTool('git', ['clone', config.upstreamUrl, upstream], { cwd: REPO_ROOT })
+  await runTool('git', ['clone', config.upstreamUrl, upstream], { cwd: REPO_ROOT })
 }
 
 /**
@@ -171,7 +204,7 @@ for (const entry of config.releaseEnv) seedReleaseEnv(entry)
 // 依赖也由流程保证：新机器上这一步把上游依赖装上，之后才谈得上构建
 if (!existsSync(join(upstream, 'node_modules'))) {
   step('源仓库依赖缺失，执行 pnpm install --frozen-lockfile')
-  runTool(process.execPath, [resolvePnpmEntry(), 'install', '--frozen-lockfile'], { cwd: upstream })
+  await runTool(process.execPath, [resolvePnpmEntry(), 'install', '--frozen-lockfile'], { cwd: upstream })
 }
 
 // ---------------------------------------------------------------- 4. 复制
@@ -325,13 +358,9 @@ for (const entry of config.build) {
     DSH_DESKTOP_APP_ID: config.appId,
     DSH_LOCAL_BUILD_KEY: buildStageKey(entry),
   }
-  const fd = openSync(LOG_PATH, 'a')
-  const result = spawnSync(command, args, { cwd, env: environment, stdio: ['ignore', fd, fd] })
-  closeSync(fd)
-  const code = result.status ?? 1
-  if (result.error !== undefined || code !== 0) {
-    const tail = existsSync(LOG_PATH) ? readFileSync(LOG_PATH, 'utf8').trimEnd().split('\n').slice(-25).join('\n') : ''
-    fail(`构建指令失败（cwd=${entry.cwd}，退出码 ${code}）\n--- 日志尾部 ---\n${tail}`)
+  const { code, error } = await runLogged(command, args, { cwd, env: environment })
+  if (error !== undefined || code !== 0) {
+    fail(`构建指令失败（cwd=${entry.cwd}，退出码 ${code}）\n--- 日志尾部 ---\n${tailLog()}`)
   }
   step(`已执行 ${entry.command.join(' ')}`)
   if (entry.artifacts !== undefined) releaseArtifacts(entry.artifacts)

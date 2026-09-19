@@ -134,7 +134,8 @@
         "to": "release/win-x64"
       },
       "env": {
-        "DSH_LOCAL_NPM_REGISTRY": "https://registry.npmmirror.com"
+        "DSH_LOCAL_NPM_REGISTRY": "https://registry.npmmirror.com",
+        "ELECTRON_MIRROR": "https://npmmirror.com/mirrors/electron/"
       }
     }
   ]
